@@ -51,7 +51,7 @@
     <WriteLinesToFile
       File="$(BridgeOutputDir)mod_manifest.json"
       Overwrite="true"
-      Lines='{"pckName":"Sts2Mod.StateBridge","name":"STS2 Agent Bridge","author":"OpenCode","description":"Loopback bridge for exporting and controlling Slay the Spire 2 runtime state.","version":"$(Version)"}' />
+      Lines='{"pck_name":"Sts2Mod.StateBridge","name":"STS2 Agent Bridge","author":"netcan","description":"Loopback bridge for exporting and controlling Slay the Spire 2 runtime state.","version":"$(Version)"}' />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(BridgeOutputDir)" SkipUnchangedFiles="true" />
     <Message Importance="High" Text="Packing Sts2Mod.StateBridge.pck via Godot headless tooling..." Condition="'$(EnableModPckPackaging)' == 'true'" />
     <Exec
