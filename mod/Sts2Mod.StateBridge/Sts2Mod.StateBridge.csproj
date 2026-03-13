@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <AssemblyName>Sts2Mod.StateBridge</AssemblyName>
+    <RootNamespace>Sts2Mod.StateBridge</RootNamespace>
+    <Version>0.1.0</Version>
+    <Sts2ProtocolVersion>0.1.0</Sts2ProtocolVersion>
+    <BridgeOutputDir Condition="'$(BridgeOutputDir)' == ''">$(MSBuildProjectDirectory)\bin\$(Configuration)\$(TargetFramework)\mod\</BridgeOutputDir>
+    <Sts2ManagedDir Condition="'$(Sts2ManagedDir)' == ''"></Sts2ManagedDir>
+    <Sts2ModLoaderDir Condition="'$(Sts2ModLoaderDir)' == ''"></Sts2ModLoaderDir>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(Sts2ManagedDir)\sts2.dll')">
+    <Reference Include="sts2">
+      <HintPath>$(Sts2ManagedDir)\sts2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(Sts2ManagedDir)\GodotSharp.dll')">
+    <Reference Include="GodotSharp">
+      <HintPath>$(Sts2ManagedDir)\GodotSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(Sts2ModLoaderDir)\0Harmony.dll')">
+    <Reference Include="0Harmony">
+      <HintPath>$(Sts2ModLoaderDir)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="ShowPrototypeMode" BeforeTargets="Build" Condition="!Exists('$(Sts2ManagedDir)\sts2.dll')">
+    <Message Importance="High" Text="Building Sts2Mod.StateBridge in prototype mode; configure Sts2ManagedDir/Sts2ModLoaderDir for real STS2 integration." />
+  </Target>
+</Project>
