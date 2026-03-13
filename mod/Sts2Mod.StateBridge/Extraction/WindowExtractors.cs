@@ -56,17 +56,31 @@ public abstract class WindowExtractorBase : IWindowExtractor
             }).ToArray(),
             Rewards = context.Rewards.ToArray(),
             MapNodes = context.MapNodes.ToArray(),
-            Metadata = context.Metadata.OrderBy(pair => pair.Key).ToDictionary(pair => pair.Key, pair => pair.Value),
+            Metadata = FilterStableMetadata(context.Metadata),
             Actions = context.Actions.Select(action => new
             {
                 action.Type,
                 action.Label,
                 Parameters = action.Parameters.OrderBy(pair => pair.Key).ToDictionary(pair => pair.Key, pair => pair.Value),
                 TargetConstraints = action.TargetConstraints?.ToArray() ?? Array.Empty<string>(),
-                Metadata = (action.Metadata ?? new Dictionary<string, object?>()).OrderBy(pair => pair.Key).ToDictionary(pair => pair.Key, pair => pair.Value),
+                Metadata = FilterStableMetadata(action.Metadata ?? new Dictionary<string, object?>()),
             }).ToArray(),
         };
         return JsonSerializer.Serialize(canonical);
+    }
+
+    private static IReadOnlyDictionary<string, object?> FilterStableMetadata(IReadOnlyDictionary<string, object?> metadata)
+    {
+        return metadata
+            .Where(pair => !IsDiagnosticsKey(pair.Key))
+            .OrderBy(pair => pair.Key)
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+    }
+
+    private static bool IsDiagnosticsKey(string key)
+    {
+        return string.Equals(key, "text_diagnostics", StringComparison.Ordinal) ||
+               string.Equals(key, "diagnostics", StringComparison.Ordinal);
     }
 
     protected DecisionSnapshot BuildSnapshot(RuntimeWindowContext context, BridgeSessionState sessionState)

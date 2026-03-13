@@ -109,13 +109,14 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private RuntimeWindowContext BuildCombatWindow(object runState)
     {
-        var player = BuildPlayerState(runState);
-        var enemies = BuildEnemies(runState);
+        var textDiagnostics = new TextDiagnosticsCollector();
+        var player = BuildPlayerState(runState, textDiagnostics);
+        var enemies = BuildEnemies(runState, textDiagnostics);
         var metadata = CreateBaseMetadata(runState, DecisionPhase.Combat);
         var actions = new List<RuntimeActionDefinition>();
         var liveEnemyIds = enemies.Where(enemy => enemy.IsAlive).Select(enemy => enemy.EnemyId).ToArray();
 
-        foreach (var card in GetHandCardDescriptors(runState).Where(card => card.Playable))
+        foreach (var card in GetHandCardDescriptors(runState, textDiagnostics).Where(card => card.Playable))
         {
             var parameters = new Dictionary<string, object?>
             {
@@ -127,12 +128,21 @@ internal sealed class Sts2RuntimeReflectionReader
                 parameters["target_type"] = card.TargetType;
             }
 
+            var actionMetadata = new Dictionary<string, object?> { ["playable"] = true };
+            if (!string.Equals(card.NameResolution.Status, "resolved", StringComparison.Ordinal))
+            {
+                foreach (var pair in RuntimeTextResolver.CreateActionDiagnostics($"actions.play_card[{card.CardId}].label", card.NameResolution))
+                {
+                    actionMetadata[pair.Key] = pair.Value;
+                }
+            }
+
             actions.Add(new RuntimeActionDefinition(
                 "play_card",
                 $"Play {card.Name}",
                 parameters,
                 BuildTargetConstraints(card.TargetType, liveEnemyIds),
-                new Dictionary<string, object?> { ["playable"] = true }));
+                actionMetadata));
         }
 
         if (player is not null)
@@ -147,6 +157,7 @@ internal sealed class Sts2RuntimeReflectionReader
         }
 
         actions.Add(new RuntimeActionDefinition("end_turn", "End Turn", new Dictionary<string, object?>()));
+        metadata["text_diagnostics"] = textDiagnostics.ToMetadata();
         return new RuntimeWindowContext(
             DecisionPhase.Combat,
             player,
@@ -160,14 +171,29 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private RuntimeWindowContext BuildRewardWindow(object runNode, object runState)
     {
-        var rewards = ExtractRewards(runNode);
+        var textDiagnostics = new TextDiagnosticsCollector();
+        var rewards = ExtractRewards(runNode, textDiagnostics);
+        var player = BuildPlayerState(runState, textDiagnostics);
         var metadata = CreateBaseMetadata(runState, DecisionPhase.Reward);
         metadata["reward_count"] = rewards.Count;
         var actions = rewards
-            .Select((reward, index) => new RuntimeActionDefinition(
-                "choose_reward",
-                $"Choose {reward}",
-                new Dictionary<string, object?> { ["reward"] = reward, ["reward_index"] = index }))
+            .Select((reward, index) =>
+            {
+                var actionMetadata = new Dictionary<string, object?>();
+                if (!string.Equals(reward.Resolution.Status, "resolved", StringComparison.Ordinal))
+                {
+                    foreach (var pair in RuntimeTextResolver.CreateActionDiagnostics($"actions.choose_reward[{index}].label", reward.Resolution))
+                    {
+                        actionMetadata[pair.Key] = pair.Value;
+                    }
+                }
+
+                return new RuntimeActionDefinition(
+                    "choose_reward",
+                    $"Choose {reward.Label}",
+                    new Dictionary<string, object?> { ["reward"] = reward.Label, ["reward_index"] = index },
+                    Metadata: actionMetadata);
+            })
             .ToList();
 
         if (rewards.Count > 0)
@@ -175,11 +201,13 @@ internal sealed class Sts2RuntimeReflectionReader
             actions.Add(new RuntimeActionDefinition("skip_reward", "Skip Reward", new Dictionary<string, object?>()));
         }
 
+        metadata["text_diagnostics"] = textDiagnostics.ToMetadata();
+
         return new RuntimeWindowContext(
             DecisionPhase.Reward,
-            BuildPlayerState(runState),
+            player,
             Array.Empty<RuntimeEnemyState>(),
-            rewards,
+            rewards.Select(reward => reward.Label).ToArray(),
             Array.Empty<string>(),
             Terminal: false,
             Metadata: metadata,
@@ -188,9 +216,12 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private RuntimeWindowContext BuildMapWindow(object runState)
     {
-        var mapNodes = ExtractMapNodes(runState);
+        var textDiagnostics = new TextDiagnosticsCollector();
+        var mapNodes = ExtractMapNodes(runState, textDiagnostics);
+        var player = BuildPlayerState(runState, textDiagnostics);
         var metadata = CreateBaseMetadata(runState, DecisionPhase.Map);
         metadata["node_count"] = mapNodes.Count;
+        metadata["text_diagnostics"] = textDiagnostics.ToMetadata();
         var actions = mapNodes
             .Select(node => new RuntimeActionDefinition(
                 "choose_map_node",
@@ -200,7 +231,7 @@ internal sealed class Sts2RuntimeReflectionReader
 
         return new RuntimeWindowContext(
             DecisionPhase.Map,
-            BuildPlayerState(runState),
+            player,
             Array.Empty<RuntimeEnemyState>(),
             Array.Empty<string>(),
             mapNodes,
@@ -211,11 +242,14 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private RuntimeWindowContext BuildTerminalWindow(object runState)
     {
+        var textDiagnostics = new TextDiagnosticsCollector();
+        var player = BuildPlayerState(runState, textDiagnostics);
         var metadata = CreateBaseMetadata(runState, DecisionPhase.Terminal);
         metadata["result"] = GetBoolean(runState, "IsGameOver") ? "game_over" : "terminal";
+        metadata["text_diagnostics"] = textDiagnostics.ToMetadata();
         return new RuntimeWindowContext(
             DecisionPhase.Terminal,
-            BuildPlayerState(runState),
+            player,
             Array.Empty<RuntimeEnemyState>(),
             Array.Empty<string>(),
             Array.Empty<string>(),
@@ -265,7 +299,7 @@ internal sealed class Sts2RuntimeReflectionReader
         return metadata;
     }
 
-    private RuntimePlayerState? BuildPlayerState(object runState)
+    private RuntimePlayerState? BuildPlayerState(object runState, TextDiagnosticsCollector textDiagnostics)
     {
         var player = GetPlayers(runState).FirstOrDefault();
         if (player is null)
@@ -275,9 +309,9 @@ internal sealed class Sts2RuntimeReflectionReader
 
         var creature = GetMemberValue(player, "Creature");
         var playerCombatState = GetMemberValue(player, "PlayerCombatState");
-        var handCards = ExtractCards(GetMemberValue(playerCombatState, "Hand"));
-        var relics = ExtractLabels(GetMemberValue(player, "Relics"));
-        var potions = ExtractLabels(GetMemberValue(player, "PotionSlots"));
+        var handCards = ExtractCards(GetMemberValue(playerCombatState, "Hand"), "player.hand", textDiagnostics);
+        var relics = ExtractLabels(GetMemberValue(player, "Relics"), "player.relics", textDiagnostics);
+        var potions = ExtractLabels(GetMemberValue(player, "PotionSlots"), "player.potions", textDiagnostics);
 
         return new RuntimePlayerState(
             Hp: GetNullableInt(creature, "CurrentHp") ?? 0,
@@ -293,7 +327,7 @@ internal sealed class Sts2RuntimeReflectionReader
             Potions: potions);
     }
 
-    private IReadOnlyList<RuntimeEnemyState> BuildEnemies(object runState)
+    private IReadOnlyList<RuntimeEnemyState> BuildEnemies(object runState, TextDiagnosticsCollector textDiagnostics)
     {
         var combatState = GetCombatState(runState);
         if (combatState is null)
@@ -304,7 +338,7 @@ internal sealed class Sts2RuntimeReflectionReader
         return EnumerateObjects(GetMemberValue(combatState, "Enemies"))
             .Select((enemy, index) => new RuntimeEnemyState(
                 EnemyId: ResolveEnemyId(enemy, index),
-                Name: ConvertToText(GetMemberValue(enemy, "Name")) ?? $"enemy_{index}",
+                Name: ConvertToText(GetMemberValue(enemy, "Name"), $"enemies[{index}].name", textDiagnostics) ?? $"enemy_{index}",
                 Hp: GetNullableInt(enemy, "CurrentHp") ?? 0,
                 MaxHp: GetNullableInt(enemy, "MaxHp") ?? 0,
                 Block: GetNullableInt(enemy, "Block") ?? 0,
@@ -313,29 +347,36 @@ internal sealed class Sts2RuntimeReflectionReader
             .ToArray();
     }
 
-    private IReadOnlyList<HandCardDescriptor> GetHandCardDescriptors(object runState)
+    private IReadOnlyList<HandCardDescriptor> GetHandCardDescriptors(object runState, TextDiagnosticsCollector textDiagnostics)
     {
         var player = GetPlayers(runState).FirstOrDefault();
         var playerCombatState = GetMemberValue(player, "PlayerCombatState");
         var hand = GetMemberValue(playerCombatState, "Hand");
         return EnumerateObjects(GetMemberValue(hand, "Cards"))
-            .Select((card, index) => new HandCardDescriptor(
-                ResolveCardId(card, index),
-                ConvertToText(GetMemberValue(card, "Title"))
-                    ?? ConvertToText(GetMemberValue(card, "Name"))
-                    ?? $"card_{index}",
-                ConvertToText(GetMemberValue(card, "TargetType")),
-                GetBoolean(card, "IsPlayable", defaultValue: true)))
+            .Select((card, index) =>
+            {
+                var nameResolution = RuntimeTextResolver.Resolve(
+                    GetMemberValue(card, "Title") ?? GetMemberValue(card, "Name") ?? card,
+                    $"player.hand[{index}].display_name",
+                    textDiagnostics,
+                    "Title",
+                    "Name");
+                return new HandCardDescriptor(
+                    ResolveCardId(card, index),
+                    nameResolution.Text ?? $"card_{index}",
+                    nameResolution,
+                    ConvertToText(GetMemberValue(card, "TargetType")),
+                    GetBoolean(card, "IsPlayable", defaultValue: true));
+            })
             .ToArray();
     }
 
-    private IReadOnlyList<RuntimeCard> ExtractCards(object? pile)
+    private IReadOnlyList<RuntimeCard> ExtractCards(object? pile, string path, TextDiagnosticsCollector textDiagnostics)
     {
         return EnumerateObjects(GetMemberValue(pile, "Cards"))
             .Select((card, index) => new RuntimeCard(
                 CardId: ResolveCardId(card, index),
-                Name: ConvertToText(GetMemberValue(card, "Title"))
-                      ?? ConvertToText(GetMemberValue(card, "Name"))
+                Name: ConvertToText(GetMemberValue(card, "Title") ?? GetMemberValue(card, "Name") ?? card, $"{path}[{index}].name", textDiagnostics, "Title", "Name")
                       ?? $"card_{index}",
                 Cost: ResolveCardCost(card),
                 Playable: GetBoolean(card, "IsPlayable", defaultValue: true)))
@@ -347,26 +388,26 @@ internal sealed class Sts2RuntimeReflectionReader
         return EnumerateObjects(GetMemberValue(pile, "Cards")).Count();
     }
 
-    private List<string> ExtractRewards(object runNode)
+    private List<RewardOption> ExtractRewards(object runNode, TextDiagnosticsCollector textDiagnostics)
     {
         var rewardScreen = GetRewardScreen(runNode);
         if (rewardScreen is null)
         {
-            return new List<string>();
+            return new List<RewardOption>();
         }
 
         return EnumerateObjects(GetMemberValue(rewardScreen, "_rewardButtons"))
-            .Select(button => DescribeReward(GetMemberValue(button, "Reward")))
-            .Where(label => !string.IsNullOrWhiteSpace(label))
-            .Select(label => label!)
+            .Select((button, index) => DescribeReward(GetMemberValue(button, "Reward"), $"rewards[{index}]", textDiagnostics))
+            .OfType<RewardOption>()
+            .Where(reward => !string.IsNullOrWhiteSpace(reward.Label))
             .ToList();
     }
 
-    private List<string> ExtractMapNodes(object runState)
+    private List<string> ExtractMapNodes(object runState, TextDiagnosticsCollector textDiagnostics)
     {
         var currentMapPoint = GetMemberValue(runState, "CurrentMapPoint");
         var nodes = EnumerateObjects(GetMemberValue(currentMapPoint, "Children"))
-            .Select(DescribeMapNode)
+            .Select((node, index) => DescribeMapNode(node, $"map_nodes[{index}]", textDiagnostics))
             .Where(label => !string.IsNullOrWhiteSpace(label))
             .Select(label => label!)
             .Distinct(StringComparer.Ordinal)
@@ -380,7 +421,7 @@ internal sealed class Sts2RuntimeReflectionReader
         var map = GetMemberValue(runState, "Map");
         var startingPoint = GetMemberValue(map, "StartingMapPoint");
         return EnumerateObjects(GetMemberValue(startingPoint, "Children"))
-            .Select(DescribeMapNode)
+            .Select((node, index) => DescribeMapNode(node, $"map_nodes[{index}]", textDiagnostics))
             .Where(label => !string.IsNullOrWhiteSpace(label))
             .Select(label => label!)
             .Distinct(StringComparer.Ordinal)
@@ -536,35 +577,29 @@ internal sealed class Sts2RuntimeReflectionReader
         return liveEnemyIds;
     }
 
-    private static List<string> ExtractLabels(object? collection)
+    private static List<string> ExtractLabels(object? collection, string path, TextDiagnosticsCollector textDiagnostics)
     {
         return EnumerateObjects(collection)
-            .Select(DescribeInventoryItem)
+            .Select((item, index) => DescribeInventoryItem(item, $"{path}[{index}]", textDiagnostics))
             .Where(label => !string.IsNullOrWhiteSpace(label))
             .Select(label => label!)
             .ToList();
     }
 
-    private static string? DescribeInventoryItem(object? item)
+    private static string? DescribeInventoryItem(object? item, string path, TextDiagnosticsCollector textDiagnostics)
     {
-        return ConvertToText(GetMemberValue(item, "Potion"))
-               ?? ConvertToText(GetMemberValue(item, "Relic"))
-               ?? ConvertToText(GetMemberValue(item, "Name"))
-               ?? ConvertToText(GetMemberValue(item, "Title"))
-               ?? ConvertToText(GetMemberValue(item, "Description"))
-               ?? ConvertToText(item);
+        return ConvertToText(item, path, textDiagnostics, "Potion", "Relic", "Name", "Title", "Description", "Label", "Text");
     }
 
-    private static string? DescribeReward(object? reward)
+    private static RewardOption? DescribeReward(object? reward, string path, TextDiagnosticsCollector textDiagnostics)
     {
-        return ConvertToText(GetMemberValue(reward, "Description"))
-               ?? ConvertToText(GetMemberValue(reward, "RewardType"))
-               ?? ConvertToText(reward);
+        var resolution = RuntimeTextResolver.Resolve(reward, path, textDiagnostics, "Description", "Label", "Name", "Title", "RewardType");
+        return resolution.HasText ? new RewardOption(resolution.Text!, resolution) : null;
     }
 
-    private static string? DescribeMapNode(object? mapPoint)
+    private static string? DescribeMapNode(object? mapPoint, string path, TextDiagnosticsCollector textDiagnostics)
     {
-        var pointType = ConvertToText(GetMemberValue(mapPoint, "PointType")) ?? "unknown";
+        var pointType = ConvertToText(GetMemberValue(mapPoint, "PointType"), $"{path}.point_type", textDiagnostics) ?? "unknown";
         var coord = DescribeMapCoord(GetMemberValue(mapPoint, "coord"));
         return $"{pointType}@{coord}";
     }
@@ -576,37 +611,14 @@ internal sealed class Sts2RuntimeReflectionReader
         return $"{col},{row}";
     }
 
-    private static string? ConvertToText(object? value)
+    private static string? ConvertToText(object? value, string path, TextDiagnosticsCollector? textDiagnostics = null, params string[] preferredMembers)
     {
-        if (value is null)
-        {
-            return null;
-        }
+        return RuntimeTextResolver.Resolve(value, path, textDiagnostics, preferredMembers).Text;
+    }
 
-        if (value is string text)
-        {
-            return string.IsNullOrWhiteSpace(text) ? null : text;
-        }
-
-        var name = GetTypeName(value);
-        if (name is not null && name.Contains("LocString", StringComparison.Ordinal))
-        {
-            var localized = value.ToString();
-            return string.IsNullOrWhiteSpace(localized) ? null : localized;
-        }
-
-        var textValue = value.ToString();
-        if (string.IsNullOrWhiteSpace(textValue))
-        {
-            return null;
-        }
-
-        if (string.Equals(textValue, value.GetType().FullName, StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        return textValue;
+    private static string? ConvertToText(object? value, params string[] preferredMembers)
+    {
+        return RuntimeTextResolver.Resolve(value, "_", null, preferredMembers).Text;
     }
 
     private static object? GetMemberValue(object? target, string memberName)
@@ -708,7 +720,8 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private readonly record struct RuntimeRoot(object GameInstance, object RunNode, object RunState);
 
-    private readonly record struct HandCardDescriptor(string CardId, string Name, string? TargetType, bool Playable);
+    private readonly record struct HandCardDescriptor(string CardId, string Name, TextResolutionResult NameResolution, string? TargetType, bool Playable);
+    private readonly record struct RewardOption(string Label, TextResolutionResult Resolution);
 
     private RuntimeActionResult ExecutePlayCard(object runState, ActionRequest request, LegalAction action)
     {
