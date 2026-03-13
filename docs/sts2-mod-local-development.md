@@ -38,6 +38,7 @@ dotnet build mod/Sts2Mod.StateBridge.sln \
 
 构建成功后，`mod/Sts2Mod.StateBridge/bin/Debug/net9.0/mod/` 会输出：
 
+- `Sts2Mod.StateBridge.pck`
 - `Sts2Mod.StateBridge.dll`
 - `mod_manifest.json`
 
@@ -57,7 +58,11 @@ F:\SteamLibrary\steamapps\common\Slay the Spire 2\mods\Sts2Mod.StateBridge\
   Sts2Mod.StateBridge.dll
 ```
 
-当前仓库会自动生成 DLL 和 manifest，但不会自动产出 `.pck`。首轮联调可使用任意 Godot 4.5 编辑器或已有打包流程，创建一个仅包含 `mod_manifest.json` 的最小 pack，然后与 DLL 放在同目录。
+当前仓库会自动调用 Godot headless 工具生成 `.pck`。若本机无法找到 Godot，可通过以下任一方式提供：
+
+- 安装官方编辑器：`winget install --id GodotEngine.GodotEngine`
+- 设置环境变量：`GODOT_EXE` 或 `GODOT_CONSOLE_EXE`
+- 构建时显式传参：`-p:GodotExe="C:\path\to\Godot_v4.x_console.exe"`
 
 ## 启动与写入控制
 
@@ -111,6 +116,7 @@ $env:STS2_BRIDGE_ENABLE_WRITES = 'true'
 
 ```bash
 python tools/validate_mod_bridge.py
+python tools/validate_mod_pck.py
 ```
 
 脚本会自动验证：
@@ -119,6 +125,8 @@ python tools/validate_mod_bridge.py
 - 四类窗口的 `snapshot` / `actions`
 - `POST /apply` 成功推进到下一窗口
 - 旧 `decision_id` 会被拒绝为 `stale_decision`
+- `.pck`、DLL 与 manifest 已一起生成
+- `.pck` 内可检测到 `res://mod_manifest.json`
 
 ### 真实游戏手工联调
 
