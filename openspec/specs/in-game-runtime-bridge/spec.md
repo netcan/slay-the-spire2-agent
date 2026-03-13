@@ -2,6 +2,7 @@
 
 ## Purpose
 定义 STS2 bridge 作为真实游戏内 mod 运行时的状态导出约束，确保 live `health`、`snapshot`、`actions` 在受控线程上下文中稳定可用。
+
 ## Requirements
 ### Requirement: 游戏内 mod 必须暴露 live runtime bridge
 系统 MUST 能以真实 STS2 mod 的形式运行在游戏进程内，并通过 loopback bridge 对外暴露 live `health`、`snapshot`、`actions` 能力。该 bridge SHALL 复用统一的决策窗口模型，并在游戏内无活动 run、运行时未就绪或版本不兼容时返回可诊断状态，而不是崩溃或阻塞游戏。
@@ -37,18 +38,18 @@
 - **THEN** 导出的 `state_version` MUST 对应推进
 - **THEN** 新的 `decision_id` MUST 反映最新的 live 决策上下文
 
-### Requirement: ?????????????????
-?? MUST ? `snapshot.player.hand` ?????????????? `card_id`?????????????????????????????????????????? `card_id` ? MUST ????? SHALL ??? `play_card` legal action ?? `params.card_id` ?????
+### Requirement: 手牌卡牌必须导出稳定且可区分的运行时 card_id
+系统 MUST 为 `snapshot.player.hand` 中的每一张手牌导出稳定的 `card_id`，并确保同名、同费用、同升级状态的重复手牌在同一决策窗口内仍然可以被区分。该 `card_id` MUST 与当前 live 牌实例保持一致，并 SHALL 被对应的 `play_card` legal action 通过 `params.card_id` 直接引用。
 
-#### Scenario: ??????????????
-- **WHEN** ???????????????????????
-- **THEN** `/snapshot.player.hand` ?????? `card_id` MUST ????
-- **THEN** ????? `name` MAY ?????? MUST ??????????
+#### Scenario: 重复手牌仍然拥有不同 card_id
+- **WHEN** 玩家当前手牌中同时存在两张或更多张表面属性相同的卡牌
+- **THEN** `/snapshot.player.hand` 中每张手牌的 `card_id` MUST 彼此不同
+- **THEN** 卡牌的 `name` MAY 相同，但 bridge MUST 仍能稳定区分这些实例
 
-#### Scenario: legal actions ? hand ????????
-- **WHEN** bridge ??????? `play_card` legal actions
-- **THEN** ?? `play_card` action ? `params.card_id` MUST ??? `snapshot.player.hand` ??????
-- **THEN** `action_id` MUST ?????? `card_id` ??????
+#### Scenario: legal actions 与 hand 中的 card_id 一一对应
+- **WHEN** bridge 生成当前窗口的 `play_card` legal actions
+- **THEN** 每个 `play_card` action 的 `params.card_id` MUST 对应到 `snapshot.player.hand` 中的一张具体手牌
+- **THEN** `action_id` MUST 反映该 `card_id` 所代表的实例级差异
 
 ### Requirement: live snapshot 与 actions 必须导出可读的用户向文本
 系统 MUST 对 in-game runtime bridge 中的主要文本字段执行统一解析，至少覆盖 relics、potions、rewards、map nodes、cards、enemies 与 action labels。当字段背后存在 `LocString` 或类似本地化容器时，bridge MUST 优先输出面向玩家的本地化文本，而不得将类名、原始对象名或无意义 `ToString()` 结果直接作为对外值。
@@ -75,4 +76,3 @@
 - **WHEN** bridge 需要暴露文本解析来源或失败原因
 - **THEN** diagnostics MUST 优先放在 metadata 或等效辅助字段中
 - **THEN** `name`、`label`、`relics`、`rewards` 等面向 Agent 的主字段 MUST 保持简洁、稳定和可读
-
