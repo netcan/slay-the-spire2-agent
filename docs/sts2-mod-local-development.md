@@ -1,90 +1,83 @@
-# STS2 mod 本地开发说明
+# STS2 mod ??????
 
-## 目录结构
+## ????
 
-- `mod/Sts2Mod.StateBridge/`：游戏侧 bridge 类库
-- `mod/Sts2Mod.StateBridge.Host/`：本地验证 host，用于不启动游戏时验证接口输出
-- `mod/Sts2Mod.StateBridge.sln`：解决方案文件
-- `tools/validate_mod_bridge.py`：自动检查 `health` / `snapshot` / `actions` 输出的脚本
+- `mod/Sts2Mod.StateBridge/`???? bridge ??
+- `mod/Sts2Mod.StateBridge.Host/`???????????? host
+- `mod/Sts2Mod.StateBridge.sln`?bridge ????
+- `tools/validate_mod_bridge.py`??? `health` / `snapshot` / `actions` ?????
 
-## 工程模式
+## ????
 
-当前实现分为两层：
+?????????
 
 1. `Sts2Mod.StateBridge`
-   - 定义游戏侧 observation / legal action / compatibility metadata 数据模型
-   - 维护 `session_id`、`decision_id`、`state_version`、`action_id`
-   - 提供 loopback 本地只读接口
-   - 默认使用 `FixtureGameStateProvider` 输出四类核心窗口
+   - ?? observation / legal action / compatibility metadata ????
+   - ?? `session_id`?`decision_id`?`state_version`?`action_id`
+   - ?? loopback ?? HTTP ??
+   - ?? `fixture provider` ? `runtime provider`
 
 2. `Sts2Mod.StateBridge.Host`
-   - 用于脱离游戏单独运行本地 bridge
-   - 方便手工验证和 agent 联调
-   - 支持自动探测 STS2 安装目录，并可切换到 `runtime provider`
+   - ?????????????????
+   - ?????? STS2 ????
+   - ????????????????
 
-## 构建
+???????????????? STS2 ???? mod?????? host ?????????????????????
+
+## ??
 
 ```bash
 dotnet build mod/Sts2Mod.StateBridge.sln
 ```
 
-## 运行本地 host
+????? STS2 ?????
+
+```bash
+dotnet build mod/Sts2Mod.StateBridge.sln \
+  -p:Sts2ManagedDir="F:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64" \
+  -p:Sts2ModLoaderDir="F:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64"
+```
+
+## ???? host
 
 ```bash
 dotnet run --project mod/Sts2Mod.StateBridge.Host -- --port 17654 --game-version prototype
 ```
 
-如果已经安装 STS2，并希望优先尝试真实运行时 provider：
+??????????? runtime provider ???
 
 ```bash
-dotnet run --project mod/Sts2Mod.StateBridge.Host -- --prefer-runtime-provider true --sts2-managed-dir "E:\SteamLibrary\steamapps\common\Slay the Spire 2\Game"
+dotnet run --project mod/Sts2Mod.StateBridge.Host -- \
+  --prefer-runtime-provider true \
+  --sts2-managed-dir "F:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64" \
+  --sts2-modloader-dir "F:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64"
 ```
 
-启动后可访问：
+???????
 
 - `GET http://127.0.0.1:17654/health`
 - `GET http://127.0.0.1:17654/snapshot`
 - `GET http://127.0.0.1:17654/actions`
 
-为方便原型验证，还支持 `phase` 查询参数：
+## ??????
 
-- `GET /snapshot?phase=combat`
-- `GET /snapshot?phase=reward`
-- `GET /snapshot?phase=map`
-- `GET /snapshot?phase=terminal`
-- `GET /actions?phase=reward`
+host ???????? STS2 ???
 
-`phase` 参数仅用于本地原型调试；真实接入 STS2 时应由 mod 自动判断当前窗口。
+1. ????? `--sts2-managed-dir` / `--sts2-modloader-dir`
+2. ???? `STS2_MANAGED_DIR` / `STS2_MODLOADER_DIR`
+3. ?? Steam ?????? `Slay the Spire 2\data_sts2_windows_x86_64`
 
-## 自动发现规则
+?? `0Harmony.dll` ?? managed ?????????????? mod loader ???
 
-host 会按以下顺序查找 STS2 相关路径：
+## ?????????
 
-1. 命令行参数 `--sts2-managed-dir` / `--sts2-modloader-dir`
-2. 环境变量 `STS2_MANAGED_DIR` / `STS2_MODLOADER_DIR`
-3. 常见 Steam 安装目录下的 `Slay the Spire 2` 路径
+`runtime provider` ???????mod ?????????????????
 
-如果没有找到 `sts2.dll`，会自动回退到 `fixture provider`，保证本地联调仍然可用。
+- ?? phase?`combat` / `reward` / `map` / `terminal`
+- ???????HP???????????????????????
+- ????????HP????????
+- ????
+- ??????
+- ?? legal actions????????????????????
 
-## 配置真实 STS2 程序集
-
-`mod/Sts2Mod.StateBridge/Sts2Mod.StateBridge.csproj` 已预留条件引用：
-
-- `$(Sts2ManagedDir)\sts2.dll`
-- `$(Sts2ManagedDir)\GodotSharp.dll`
-- `$(Sts2ModLoaderDir)\0Harmony.dll`
-
-示例：
-
-```bash
-dotnet build mod/Sts2Mod.StateBridge.sln -p:Sts2ManagedDir="E:\SteamLibrary\steamapps\common\Slay the Spire 2\Game" -p:Sts2ModLoaderDir="E:\mods\sts2"
-```
-
-如果没有配置这些路径，工程会以 `prototype mode` 编译，不会阻塞本地验证。
-
-## 后续接真实游戏的落点
-
-- 将 `FixtureGameStateProvider` 替换为真实的 `Sts2RuntimeStateProvider`
-- 保留现有 HTTP 输出层与数据模型
-- 在真实 provider 中读取游戏对象并映射为 `RuntimeWindowContext`
-- 由四个窗口 extractor 统一生成对外 observation / actions
+????????????????????????????? mod loader?

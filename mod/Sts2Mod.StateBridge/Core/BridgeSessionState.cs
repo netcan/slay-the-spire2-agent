@@ -8,6 +8,7 @@ public sealed class BridgeSessionState
     private readonly BridgeOptions _options;
     private int _stateVersion;
     private string _phase;
+    private string? _fingerprint;
 
     public BridgeSessionState(BridgeOptions options)
     {
@@ -30,16 +31,20 @@ public sealed class BridgeSessionState
         _options.ProviderMode,
         _options.ReadOnly,
         Ready: true,
-        Notes: "prototype bridge");
+        Notes: _options.ProviderMode == "runtime" ? "runtime bridge" : "prototype bridge");
 
-    public void AdvanceIfNeeded(string phase)
+    public void AdvanceIfNeeded(string phase, string? fingerprint = null)
     {
-        if (string.Equals(_phase, phase, StringComparison.OrdinalIgnoreCase))
+        var normalizedFingerprint = string.IsNullOrWhiteSpace(fingerprint) ? null : fingerprint;
+        var phaseChanged = !string.Equals(_phase, phase, StringComparison.OrdinalIgnoreCase);
+        var fingerprintChanged = !string.Equals(_fingerprint, normalizedFingerprint, StringComparison.Ordinal);
+        if (!phaseChanged && !fingerprintChanged)
         {
             return;
         }
 
         _phase = phase;
+        _fingerprint = normalizedFingerprint;
         _stateVersion += 1;
         DecisionId = BridgeIds.CreateDecisionId(SessionId, _stateVersion, _phase);
     }

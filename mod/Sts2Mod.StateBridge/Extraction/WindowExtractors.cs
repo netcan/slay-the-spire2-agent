@@ -1,5 +1,6 @@
 using Sts2Mod.StateBridge.Contracts;
 using Sts2Mod.StateBridge.Core;
+using System.Text.Json;
 
 namespace Sts2Mod.StateBridge.Extraction;
 
@@ -9,7 +10,7 @@ public abstract class WindowExtractorBase : IWindowExtractor
 
     public ExportedWindow Export(RuntimeWindowContext context, BridgeSessionState sessionState)
     {
-        sessionState.AdvanceIfNeeded(context.Phase);
+        sessionState.AdvanceIfNeeded(context.Phase, CreateFingerprint(context));
         var snapshot = BuildSnapshot(context, sessionState);
         var actions = context.Actions.Select(action => new LegalAction(
             sessionState.CreateActionId(action.Type, action.Parameters),
@@ -19,6 +20,53 @@ public abstract class WindowExtractorBase : IWindowExtractor
             action.TargetConstraints ?? Array.Empty<string>(),
             action.Metadata ?? new Dictionary<string, object?>())).ToArray();
         return new ExportedWindow(snapshot, actions);
+    }
+
+    private static string CreateFingerprint(RuntimeWindowContext context)
+    {
+        var canonical = new
+        {
+            context.Phase,
+            context.Terminal,
+            Player = context.Player is null
+                ? null
+                : new
+                {
+                    context.Player.Hp,
+                    context.Player.MaxHp,
+                    context.Player.Block,
+                    context.Player.Energy,
+                    context.Player.Gold,
+                    Hand = context.Player.Hand.Select(card => new { card.CardId, card.Name, card.Cost, card.Playable }).ToArray(),
+                    context.Player.DrawPile,
+                    context.Player.DiscardPile,
+                    context.Player.ExhaustPile,
+                    Relics = context.Player.Relics.ToArray(),
+                    Potions = context.Player.Potions.ToArray(),
+                },
+            Enemies = context.Enemies.Select(enemy => new
+            {
+                enemy.EnemyId,
+                enemy.Name,
+                enemy.Hp,
+                enemy.MaxHp,
+                enemy.Block,
+                enemy.Intent,
+                enemy.IsAlive,
+            }).ToArray(),
+            Rewards = context.Rewards.ToArray(),
+            MapNodes = context.MapNodes.ToArray(),
+            Metadata = context.Metadata.OrderBy(pair => pair.Key).ToDictionary(pair => pair.Key, pair => pair.Value),
+            Actions = context.Actions.Select(action => new
+            {
+                action.Type,
+                action.Label,
+                Parameters = action.Parameters.OrderBy(pair => pair.Key).ToDictionary(pair => pair.Key, pair => pair.Value),
+                TargetConstraints = action.TargetConstraints?.ToArray() ?? Array.Empty<string>(),
+                Metadata = (action.Metadata ?? new Dictionary<string, object?>()).OrderBy(pair => pair.Key).ToDictionary(pair => pair.Key, pair => pair.Value),
+            }).ToArray(),
+        };
+        return JsonSerializer.Serialize(canonical);
     }
 
     protected DecisionSnapshot BuildSnapshot(RuntimeWindowContext context, BridgeSessionState sessionState)

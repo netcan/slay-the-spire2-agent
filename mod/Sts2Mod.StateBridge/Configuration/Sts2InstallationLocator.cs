@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Sts2Mod.StateBridge.Configuration;
 
 public sealed record InstallationProbeResult(
@@ -17,6 +19,12 @@ public static class Sts2InstallationLocator
 
         var managedDir = managedCandidates.FirstOrDefault(ContainsManagedAssemblies);
         var modLoaderDir = modLoaderCandidates.FirstOrDefault(ContainsModLoaderAssemblies);
+
+        if (modLoaderDir is null && managedDir is not null && ContainsModLoaderAssemblies(managedDir))
+        {
+            modLoaderDir = managedDir;
+            notes.Add("mod loader assemblies were discovered in the managed directory");
+        }
 
         if (managedDir is null)
         {
@@ -52,12 +60,15 @@ public static class Sts2InstallationLocator
                      @"C:\Program Files\Steam\steamapps\common",
                      @"D:\SteamLibrary\steamapps\common",
                      @"E:\SteamLibrary\steamapps\common",
+                     @"F:\SteamLibrary\steamapps\common",
                  })
         {
             foreach (var suffix in new[]
                      {
+                         @"Slay the Spire 2\data_sts2_windows_x86_64",
                          @"Slay the Spire 2\Game",
                          @"Slay the Spire 2",
+                         @"SlayTheSpire2\data_sts2_windows_x86_64",
                          @"SlayTheSpire2\Game",
                          @"SlayTheSpire2",
                      })
@@ -80,11 +91,20 @@ public static class Sts2InstallationLocator
             yield return envValue;
         }
 
+        foreach (var managedCandidate in GetManagedCandidates(options))
+        {
+            yield return managedCandidate;
+        }
+
         foreach (var root in new[]
                  {
                      @"C:\Program Files (x86)\Steam\steamapps\workshop\content",
+                     @"C:\Program Files\Steam\steamapps\workshop\content",
+                     @"D:\SteamLibrary\steamapps\workshop\content",
                      @"E:\SteamLibrary\steamapps\workshop\content",
+                     @"F:\SteamLibrary\steamapps\workshop\content",
                      @"E:\mods\sts2",
+                     @"F:\mods\sts2",
                  })
         {
             yield return root;
@@ -105,6 +125,37 @@ public static class Sts2InstallationLocator
 
     private static string? ReadGameVersion(string managedDir)
     {
+        var releaseInfoPath = Path.Combine(Directory.GetParent(managedDir)?.FullName ?? managedDir, "release_info.json");
+        if (File.Exists(releaseInfoPath))
+        {
+            try
+            {
+                using var stream = File.OpenRead(releaseInfoPath);
+                using var document = JsonDocument.Parse(stream);
+                var root = document.RootElement;
+                if (root.TryGetProperty("version", out var versionElement))
+                {
+                    var version = versionElement.GetString();
+                    if (!string.IsNullOrWhiteSpace(version))
+                    {
+                        if (root.TryGetProperty("commit", out var commitElement))
+                        {
+                            var commit = commitElement.GetString();
+                            if (!string.IsNullOrWhiteSpace(commit))
+                            {
+                                return $"{version} ({commit})";
+                            }
+                        }
+
+                        return version;
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
         var dllPath = Path.Combine(managedDir, "sts2.dll");
         if (!File.Exists(dllPath))
         {

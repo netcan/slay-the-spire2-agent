@@ -8,3 +8,4 @@ obj/
 build/
 dist/
 traces/
+tmp/
