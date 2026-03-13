@@ -1,0 +1,27 @@
+﻿schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+context: |
+  项目目标：构建 Slay the Spire 2 的 agent 接入能力，优先通过 mod 暴露结构化状态与可执行动作，支撑外部策略或大模型自动打牌。
+  输出语言：默认使用简体中文撰写 proposal、design、specs、tasks。
+  术语约定：代码标识符、协议字段名、路径名、能力名使用原始英文或 kebab-case；解释性正文使用中文。
+  风格约定：内容尽量具体、可执行、面向实现，不写空泛描述。
+
+# Per-artifact rules (optional)
+rules:
+  proposal:
+    - 全文使用简体中文，保留 capability 名称的英文标识。
+    - 重点写清为什么要做、要新增什么能力、影响范围是什么。
+  design:
+    - 全文使用简体中文，保留接口名、字段名、能力名的英文标识。
+    - 明确技术决策、风险、取舍，不要把 design 写成任务清单。
+  specs:
+    - 需求正文使用简体中文。
+    - 必须保留 OpenSpec 要求的结构关键字，如 `## ADDED Requirements`、`### Requirement:`、`#### Scenario:`。
+    - 场景描述使用中文，但规范性语句保持明确、可测试。
+  tasks:
+    - 全文使用简体中文。
+    - 必须严格使用 `- [ ]` 复选框格式。
+    - 任务拆分要能直接进入实现，避免过大或过虚。
