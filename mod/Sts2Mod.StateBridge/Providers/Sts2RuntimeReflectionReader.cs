@@ -2492,7 +2492,7 @@ internal sealed class Sts2RuntimeReflectionReader
             ?? GetMemberValue(source, "BodyText")
             ?? GetMemberValue(card, "Text");
         var boundDescriptionValue = TryBindLocStringWithDynamicVars(descriptionValue, source ?? card);
-        var raw = ConvertToText(
+        var raw = ConvertDescriptionTemplateToText(
             descriptionValue,
             path,
             textDiagnostics,
@@ -2842,7 +2842,7 @@ internal sealed class Sts2RuntimeReflectionReader
             return null;
         }
 
-        var raw = ConvertToText(
+        var raw = ConvertDescriptionTemplateToText(
             GetMemberValue(power, "Description")
             ?? GetMemberValue(power, "RulesText")
             ?? GetMemberValue(power, "Text"),
@@ -3677,6 +3677,30 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private static string? ConvertToText(object? value, string path, TextDiagnosticsCollector? textDiagnostics = null, params string[] preferredMembers)
     {
+        return RuntimeTextResolver.Resolve(value, path, textDiagnostics, preferredMembers).Text;
+    }
+
+    private static string? ConvertDescriptionTemplateToText(object? value, string path, TextDiagnosticsCollector? textDiagnostics = null, params string[] preferredMembers)
+    {
+        if (value is not null)
+        {
+            var typeName = GetTypeName(value) ?? string.Empty;
+            if (typeName.Contains("LocString", StringComparison.Ordinal))
+            {
+                if (TryInvokeParameterlessMethod(value, "GetRawText") is string rawText && !string.IsNullOrWhiteSpace(rawText))
+                {
+                    textDiagnostics?.Record(path, new TextResolutionResult(rawText, "fallback", "loc_string.raw"));
+                    return rawText;
+                }
+
+                if (GetMemberValue(value, "LocEntryKey") is string entryKey && !string.IsNullOrWhiteSpace(entryKey))
+                {
+                    textDiagnostics?.Record(path, new TextResolutionResult(entryKey, "fallback", "loc_string.key"));
+                    return entryKey;
+                }
+            }
+        }
+
         return RuntimeTextResolver.Resolve(value, path, textDiagnostics, preferredMembers).Text;
     }
 
