@@ -36,6 +36,44 @@ class CardView:
     name: str
     cost: int
     playable: bool = True
+    instance_card_id: str | None = None
+    canonical_card_id: str | None = None
+    description: str | None = None
+    cost_for_turn: int | None = None
+    upgraded: bool | None = None
+    target_type: str | None = None
+    card_type: str | None = None
+    rarity: str | None = None
+    traits: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PowerView:
+    power_id: str
+    name: str
+    amount: int | None = None
+    description: str | None = None
+    canonical_power_id: str | None = None
+
+
+@dataclass(slots=True)
+class RunMapState:
+    current_coord: str | None = None
+    current_node_type: str | None = None
+    reachable_nodes: list[str] = field(default_factory=list)
+    source: str | None = None
+
+
+@dataclass(slots=True)
+class RunState:
+    act: int | None = None
+    floor: int | None = None
+    current_room_type: str | None = None
+    current_location_type: str | None = None
+    current_act_index: int | None = None
+    ascension_level: int | None = None
+    map: RunMapState | None = None
 
 
 @dataclass(slots=True)
@@ -51,6 +89,7 @@ class PlayerState:
     exhaust_pile: int = 0
     relics: list[str] = field(default_factory=list)
     potions: list[str] = field(default_factory=list)
+    powers: list[PowerView] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -62,6 +101,15 @@ class EnemyState:
     block: int
     intent: str
     is_alive: bool = True
+    instance_enemy_id: str | None = None
+    canonical_enemy_id: str | None = None
+    intent_raw: str | None = None
+    intent_type: str | None = None
+    intent_damage: int | None = None
+    intent_hits: int | None = None
+    intent_block: int | None = None
+    intent_effects: list[str] = field(default_factory=list)
+    powers: list[PowerView] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -86,6 +134,7 @@ class DecisionSnapshot:
     map_nodes: list[str] = field(default_factory=list)
     terminal: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    run_state: RunState | None = None
 
 
 @dataclass(slots=True)

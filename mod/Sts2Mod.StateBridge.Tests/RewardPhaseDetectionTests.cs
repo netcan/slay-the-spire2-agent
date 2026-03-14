@@ -74,6 +74,59 @@ public sealed class RewardPhaseDetectionTests
     }
 
     [Fact]
+    public void BuildCombatWindow_ExportsRichCardsEnemiesPowersAndRunState()
+    {
+        var reader = CreateReader();
+        var runNode = new FakeRunNode(new FakeScreenTracker());
+        var currentPoint = new FakeMapPoint("Monster", new FakeMapCoord(1, 1),
+            new FakeMapPoint("Elite", new FakeMapCoord(2, 2)));
+        var runState = new FakeRunState(
+            new[] { new FakeEnemy("enemy-1", true, intent: "Attack+Weak", intentDamage: 7, intentHits: 2) },
+            currentMapPoint: currentPoint,
+            hand: new[]
+            {
+                new FakeCard("Strike")
+                {
+                    CardId = "strike_red",
+                    Description = "Deal 6 damage.",
+                    TargetType = "AnyEnemy",
+                    CardType = "Attack",
+                    Rarity = "Starter",
+                    Traits = new[] { "starter" },
+                    Keywords = new[] { "damage" },
+                },
+            });
+
+        var window = InvokeBuildCombatWindow(reader, runNode, runState);
+        var exported = new CombatWindowExtractor().Export(window, new BridgeSessionState(new BridgeOptions()));
+
+        var player = exported.Snapshot.Player;
+        Assert.NotNull(player);
+        var card = Assert.Single(player.Hand);
+        Assert.Equal("strike_red", card.CanonicalCardId);
+        Assert.Equal("Deal 6 damage.", card.Description);
+        Assert.Equal("AnyEnemy", card.TargetType);
+        Assert.Contains("starter", card.Traits ?? Array.Empty<string>());
+        Assert.Contains("Metallicize", player.Powers?.Select(power => power.Name) ?? Array.Empty<string>());
+
+        var enemy = Assert.Single(exported.Snapshot.Enemies);
+        Assert.Equal("louse", enemy.CanonicalEnemyId);
+        Assert.Equal("attack_debuff", enemy.IntentType);
+        Assert.Equal(7, enemy.IntentDamage);
+        Assert.Equal(2, enemy.IntentHits);
+        Assert.Contains("weak", enemy.IntentEffects ?? Array.Empty<string>());
+        Assert.Contains("Vulnerable", enemy.Powers?.Select(power => power.Name) ?? Array.Empty<string>());
+
+        var runStateSnapshot = exported.Snapshot.RunState;
+        Assert.NotNull(runStateSnapshot);
+        Assert.Equal(1, runStateSnapshot.Act);
+        Assert.Equal(1, runStateSnapshot.Floor);
+        Assert.Equal("FakeCombatRoom", runStateSnapshot.CurrentRoomType);
+        Assert.Equal("1,1", runStateSnapshot.Map?.CurrentCoord);
+        Assert.Contains("Elite@2,2", runStateSnapshot.Map?.ReachableNodes ?? Array.Empty<string>());
+    }
+
+    [Fact]
     public void BuildRewardWindow_ExportsRewardChoicesAndDiagnostics()
     {
         var reader = CreateReader();
@@ -395,6 +448,18 @@ public sealed class RewardPhaseDetectionTests
     private sealed class FakeCard(string title)
     {
         public string Title { get; } = title;
+        public string CardId { get; init; } = title.ToLowerInvariant();
+        public string Name => Title;
+        public string Description { get; init; } = string.Empty;
+        public bool IsUpgraded { get; init; }
+        public string TargetType { get; init; } = "AnyEnemy";
+        public string CardType { get; init; } = "Attack";
+        public string Rarity { get; init; } = "Common";
+        public int CanonicalEnergyCost { get; init; } = 1;
+        public int CurrentStarCost { get; init; } = 1;
+        public bool IsPlayable { get; init; } = true;
+        public IReadOnlyList<string> Traits { get; init; } = Array.Empty<string>();
+        public IReadOnlyList<string> Keywords { get; init; } = Array.Empty<string>();
     }
 
     private sealed class FakeCardChoice(FakeCard card)
@@ -428,10 +493,15 @@ public sealed class RewardPhaseDetectionTests
         IEnumerable<FakeEnemy> enemies,
         object? currentRoom = null,
         FakeMapPoint? currentMapPoint = null,
-        FakeMap? map = null)
+        FakeMap? map = null,
+        IReadOnlyList<FakeCard>? hand = null)
     {
         public object CurrentRoom { get; } = currentRoom ?? new FakeCombatRoom();
-        public List<FakePlayer> Players { get; } = new() { new FakePlayer(enemies.ToArray()) };
+        public object CurrentLocation { get; } = "Act1";
+        public int ActFloor { get; } = 1;
+        public int CurrentActIndex { get; } = 0;
+        public int AscensionLevel { get; } = 0;
+        public List<FakePlayer> Players { get; } = new() { new FakePlayer(enemies.ToArray(), hand?.ToArray() ?? Array.Empty<FakeCard>()) };
         public FakeMapPoint? CurrentMapPoint { get; } = currentMapPoint;
         public FakeMap? Map { get; } = map;
     }
@@ -457,11 +527,11 @@ public sealed class RewardPhaseDetectionTests
         public int row { get; } = row;
     }
 
-    private sealed class FakePlayer(FakeEnemy[] enemies)
+    private sealed class FakePlayer(FakeEnemy[] enemies, params FakeCard[] handCards)
     {
         public int Gold { get; } = 99;
         public FakeCreature Creature { get; } = new(enemies);
-        public FakePlayerCombatState PlayerCombatState { get; } = new();
+        public FakePlayerCombatState PlayerCombatState { get; } = new(handCards);
         public List<object> Relics { get; } = new();
         public List<object> PotionSlots { get; } = new();
     }
@@ -472,6 +542,7 @@ public sealed class RewardPhaseDetectionTests
         public int MaxHp { get; } = 80;
         public int Block { get; } = 0;
         public FakeCombatState CombatState { get; } = new(enemies);
+        public List<FakePower> Powers { get; } = new() { new FakePower("metallicize", "Metallicize", 3, "Gain 3 Block at end of turn.") };
     }
 
     private sealed class FakeCombatState(FakeEnemy[] enemies)
@@ -481,30 +552,43 @@ public sealed class RewardPhaseDetectionTests
         public List<FakeEnemy> Enemies { get; } = new(enemies);
     }
 
-    private sealed class FakeEnemy(string combatId, bool isAlive)
+    private sealed class FakeEnemy(string combatId, bool isAlive, string intent = "Attack", int intentDamage = 6, int intentHits = 1, string? intentType = null)
     {
         public string CombatId { get; } = combatId;
         public string Name { get; } = "Louse";
+        public string EnemyId { get; } = "louse";
         public int CurrentHp { get; } = isAlive ? 10 : 0;
         public int MaxHp { get; } = 10;
         public int Block { get; } = 0;
-        public string Intent { get; } = "Attack";
+        public string Intent { get; } = intent;
+        public string? IntentType { get; } = intentType;
+        public int IntentDamage { get; } = intentDamage;
+        public int IntentHits { get; } = intentHits;
         public bool IsAlive { get; } = isAlive;
+        public List<FakePower> Powers { get; } = new() { new FakePower("vulnerable", "Vulnerable", 1, "Receive more attack damage.") };
     }
 
-    private sealed class FakePlayerCombatState
+    private sealed class FakePlayerCombatState(params FakeCard[] cards)
     {
         public int Energy { get; } = 3;
         public int Stars { get; } = 0;
         public int MaxEnergy { get; } = 3;
-        public FakePile Hand { get; } = new();
+        public FakePile Hand { get; } = new(cards);
         public FakePile DrawPile { get; } = new();
         public FakePile DiscardPile { get; } = new();
         public FakePile ExhaustPile { get; } = new();
     }
 
-    private sealed class FakePile
+    private sealed class FakePile(params object[] cards)
     {
-        public List<object> Cards { get; } = new();
+        public List<object> Cards { get; } = new(cards);
+    }
+
+    private sealed class FakePower(string id, string name, int amount, string description)
+    {
+        public string PowerId { get; } = id;
+        public string Name { get; } = name;
+        public int Amount { get; } = amount;
+        public string Description { get; } = description;
     }
 }

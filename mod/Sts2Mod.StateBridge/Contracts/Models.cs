@@ -18,7 +18,43 @@ public sealed record CompatibilityMetadata(
     bool Ready,
     string? Notes = null);
 
-public sealed record CardView(string CardId, string Name, int Cost, bool Playable);
+public sealed record PowerView(
+    string PowerId,
+    string Name,
+    int? Amount = null,
+    string? Description = null,
+    string? CanonicalPowerId = null);
+
+public sealed record RunMapState(
+    string? CurrentCoord = null,
+    string? CurrentNodeType = null,
+    IReadOnlyList<string>? ReachableNodes = null,
+    string? Source = null);
+
+public sealed record RunState(
+    int? Act = null,
+    int? Floor = null,
+    string? CurrentRoomType = null,
+    string? CurrentLocationType = null,
+    int? CurrentActIndex = null,
+    int? AscensionLevel = null,
+    RunMapState? Map = null);
+
+public sealed record CardView(
+    string CardId,
+    string Name,
+    int Cost,
+    bool Playable,
+    string? InstanceCardId = null,
+    string? CanonicalCardId = null,
+    string? Description = null,
+    int? CostForTurn = null,
+    bool? Upgraded = null,
+    string? TargetType = null,
+    string? CardType = null,
+    string? Rarity = null,
+    IReadOnlyList<string>? Traits = null,
+    IReadOnlyList<string>? Keywords = null);
 
 public sealed record PlayerState(
     int Hp,
@@ -31,7 +67,8 @@ public sealed record PlayerState(
     int DiscardPile,
     int ExhaustPile,
     IReadOnlyList<string> Relics,
-    IReadOnlyList<string> Potions);
+    IReadOnlyList<string> Potions,
+    IReadOnlyList<PowerView>? Powers = null);
 
 public sealed record EnemyState(
     string EnemyId,
@@ -40,7 +77,16 @@ public sealed record EnemyState(
     int MaxHp,
     int Block,
     string Intent,
-    bool IsAlive);
+    bool IsAlive,
+    string? InstanceEnemyId = null,
+    string? CanonicalEnemyId = null,
+    string? IntentRaw = null,
+    string? IntentType = null,
+    int? IntentDamage = null,
+    int? IntentHits = null,
+    int? IntentBlock = null,
+    IReadOnlyList<string>? IntentEffects = null,
+    IReadOnlyList<PowerView>? Powers = null);
 
 public sealed record LegalAction(
     string ActionId,
@@ -61,7 +107,8 @@ public sealed record DecisionSnapshot(
     IReadOnlyList<string> MapNodes,
     bool Terminal,
     CompatibilityMetadata Compatibility,
-    IReadOnlyDictionary<string, object?> Metadata);
+    IReadOnlyDictionary<string, object?> Metadata,
+    RunState? RunState = null);
 
 public sealed record HealthResponse(
     bool Healthy,

@@ -75,6 +75,7 @@ class ChatCompletionsPolicy:
             "必须返回 JSON，字段为 action_id、reason、halt、args。"
             "如果你认为当前不应继续自动操作，可以返回 halt=true 且 action_id=null。"
             "args 可省略或填空对象；若所选动作有多个 target_constraints，必须在 args.target_id 中返回其中一个合法目标。"
+            "snapshot 里的手牌、敌人、powers、intent 和 run_state 都是当前局面的事实层信息，应优先基于这些字段判断，而不是只猜卡名。"
             "当 snapshot.phase=reward 时，你需要在 choose_reward 或 skip_reward 等奖励动作中做选择；"
             "若不确定，优先返回 halt=true 或选择 skip_reward（并在 reason 说明原因）。"
             "当 snapshot.phase=map 时，只能在 choose_map_node 中选择一个可达节点；"
@@ -226,13 +227,17 @@ class ChatCompletionsPolicy:
 
     @staticmethod
     def _summarize_action(action: LegalAction) -> dict[str, Any]:
-        return {
+        payload = {
             "action_id": action.action_id,
             "type": action.type,
             "label": action.label,
             "params": to_dict(action.params),
             "target_constraints": to_dict(action.target_constraints),
         }
+        card_preview = action.metadata.get("card_preview")
+        if isinstance(card_preview, dict):
+            payload["card_preview"] = to_dict(card_preview)
+        return payload
 
     @staticmethod
     def _summarize_snapshot(snapshot: DecisionSnapshot) -> dict[str, Any]:
@@ -250,14 +255,119 @@ class ChatCompletionsPolicy:
                 "block": snapshot.player.block,
                 "energy": snapshot.player.energy,
                 "gold": snapshot.player.gold,
-                "hand": [to_dict(card) for card in snapshot.player.hand],
+                "draw_pile": snapshot.player.draw_pile,
+                "discard_pile": snapshot.player.discard_pile,
+                "exhaust_pile": snapshot.player.exhaust_pile,
+                "hand": [ChatCompletionsPolicy._summarize_card(card) for card in snapshot.player.hand],
                 "relics": list(snapshot.player.relics),
                 "potions": list(snapshot.player.potions),
+                "powers": [ChatCompletionsPolicy._summarize_power(power) for power in snapshot.player.powers],
             }
         if snapshot.enemies:
-            payload["enemies"] = [to_dict(enemy) for enemy in snapshot.enemies]
+            payload["enemies"] = [ChatCompletionsPolicy._summarize_enemy(enemy) for enemy in snapshot.enemies]
         if snapshot.rewards:
             payload["rewards"] = list(snapshot.rewards)
         if snapshot.map_nodes:
             payload["map_nodes"] = list(snapshot.map_nodes)
+        if snapshot.run_state is not None:
+            payload["run_state"] = ChatCompletionsPolicy._summarize_run_state(snapshot)
+        if snapshot.metadata:
+            metadata_summary = {
+                key: snapshot.metadata[key]
+                for key in ("window_kind", "reward_subphase", "map_ready", "reward_pending")
+                if key in snapshot.metadata
+            }
+            if metadata_summary:
+                payload["metadata"] = metadata_summary
+        return payload
+
+    @staticmethod
+    def _summarize_card(card: Any) -> dict[str, Any]:
+        payload = {
+            "card_id": card.card_id,
+            "name": card.name,
+            "cost": card.cost,
+            "playable": card.playable,
+        }
+        optional_values = {
+            "canonical_card_id": card.canonical_card_id,
+            "description": card.description,
+            "cost_for_turn": card.cost_for_turn,
+            "upgraded": card.upgraded,
+            "target_type": card.target_type,
+            "card_type": card.card_type,
+            "rarity": card.rarity,
+            "traits": list(card.traits),
+            "keywords": list(card.keywords),
+        }
+        for key, value in optional_values.items():
+            if value not in (None, [], ""):
+                payload[key] = value
+        return payload
+
+    @staticmethod
+    def _summarize_power(power: Any) -> dict[str, Any]:
+        payload = {
+            "power_id": power.power_id,
+            "name": power.name,
+        }
+        if power.amount is not None:
+            payload["amount"] = power.amount
+        if power.description:
+            payload["description"] = power.description
+        if power.canonical_power_id:
+            payload["canonical_power_id"] = power.canonical_power_id
+        return payload
+
+    @staticmethod
+    def _summarize_enemy(enemy: Any) -> dict[str, Any]:
+        payload = {
+            "enemy_id": enemy.enemy_id,
+            "name": enemy.name,
+            "hp": enemy.hp,
+            "max_hp": enemy.max_hp,
+            "block": enemy.block,
+            "intent": enemy.intent,
+            "is_alive": enemy.is_alive,
+        }
+        optional_values = {
+            "canonical_enemy_id": enemy.canonical_enemy_id,
+            "intent_raw": enemy.intent_raw,
+            "intent_type": enemy.intent_type,
+            "intent_damage": enemy.intent_damage,
+            "intent_hits": enemy.intent_hits,
+            "intent_block": enemy.intent_block,
+            "intent_effects": list(enemy.intent_effects),
+        }
+        for key, value in optional_values.items():
+            if value not in (None, [], ""):
+                payload[key] = value
+        if enemy.powers:
+            payload["powers"] = [ChatCompletionsPolicy._summarize_power(power) for power in enemy.powers]
+        return payload
+
+    @staticmethod
+    def _summarize_run_state(snapshot: DecisionSnapshot) -> dict[str, Any]:
+        assert snapshot.run_state is not None
+        payload = {
+            "act": snapshot.run_state.act,
+            "floor": snapshot.run_state.floor,
+            "current_room_type": snapshot.run_state.current_room_type,
+            "current_location_type": snapshot.run_state.current_location_type,
+            "current_act_index": snapshot.run_state.current_act_index,
+            "ascension_level": snapshot.run_state.ascension_level,
+        }
+        payload = {key: value for key, value in payload.items() if value is not None}
+        if snapshot.run_state.map is not None:
+            map_payload = {
+                "current_coord": snapshot.run_state.map.current_coord,
+                "current_node_type": snapshot.run_state.map.current_node_type,
+                "reachable_nodes": list(snapshot.run_state.map.reachable_nodes),
+                "source": snapshot.run_state.map.source,
+            }
+            payload["map"] = {
+                key: value
+                for key, value in map_payload.items()
+                if value not in (None, [], "")
+            }
         return payload

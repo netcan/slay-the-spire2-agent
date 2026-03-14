@@ -11,21 +11,101 @@
     "exhaust_pile": 0,
     "relics": ["Burning Blood"],
     "potions": ["Strength Potion"],
+    "powers": [
+      {
+        "power_id": "metallicize",
+        "name": "Metallicize",
+        "amount": 3,
+        "description": "At end of turn gain 3 Block.",
+        "canonical_power_id": "metallicize"
+      }
+    ],
     "hand": [
-      {"card_id": "strike_red", "name": "Strike", "cost": 1, "playable": true},
-      {"card_id": "defend_red", "name": "Defend", "cost": 1, "playable": true}
+      {
+        "card_id": "strike_red#0",
+        "instance_card_id": "strike_red#0",
+        "canonical_card_id": "strike_red",
+        "name": "Strike",
+        "cost": 1,
+        "cost_for_turn": 1,
+        "playable": true,
+        "description": "Deal 6 damage.",
+        "upgraded": false,
+        "target_type": "AnyEnemy",
+        "card_type": "Attack",
+        "rarity": "Starter",
+        "traits": ["starter"],
+        "keywords": ["damage"]
+      },
+      {
+        "card_id": "defend_red#1",
+        "instance_card_id": "defend_red#1",
+        "canonical_card_id": "defend_red",
+        "name": "Defend",
+        "cost": 1,
+        "cost_for_turn": 1,
+        "playable": true,
+        "description": "Gain 5 Block.",
+        "upgraded": false,
+        "target_type": "Self",
+        "card_type": "Skill",
+        "rarity": "Starter",
+        "traits": ["starter"],
+        "keywords": ["block"]
+      }
     ]
   },
   "enemies": [
-    {"enemy_id": "jaw_worm_1", "name": "Jaw Worm", "hp": 38, "max_hp": 42, "block": 0, "intent": "attack_11", "is_alive": true}
+    {
+      "enemy_id": "jaw_worm_1",
+      "instance_enemy_id": "jaw_worm_1",
+      "canonical_enemy_id": "jaw_worm",
+      "name": "Jaw Worm",
+      "hp": 38,
+      "max_hp": 42,
+      "block": 0,
+      "intent": "attack_11",
+      "intent_raw": "Attack",
+      "intent_type": "attack",
+      "intent_damage": 11,
+      "intent_hits": 1,
+      "intent_effects": [],
+      "is_alive": true,
+      "powers": [
+        {
+          "power_id": "strength",
+          "name": "Strength",
+          "amount": 3,
+          "description": "Increase attack damage.",
+          "canonical_power_id": "strength"
+        }
+      ]
+    }
   ],
   "rewards": [],
   "map_nodes": [],
   "terminal": false,
-  "metadata": {"room_type": "combat", "turn": 1},
+  "metadata": {
+    "room_type": "combat",
+    "turn": 1
+  },
+  "run_state": {
+    "act": 1,
+    "floor": 1,
+    "current_room_type": "CombatRoom",
+    "current_location_type": "Act1",
+    "current_act_index": 0,
+    "ascension_level": 0,
+    "map": {
+      "current_coord": "0,0",
+      "current_node_type": "monster",
+      "reachable_nodes": ["monster_left@0,1", "elite_center@1,1", "question_right@2,1"],
+      "source": "fixture"
+    }
+  },
   "legal_actions": [
-    {"type": "play_card", "label": "Play Strike", "card_id": "strike_red", "target_constraints": ["jaw_worm_1"]},
-    {"type": "play_card", "label": "Play Defend", "card_id": "defend_red"},
+    {"type": "play_card", "label": "Play Strike", "card_id": "strike_red#0", "target_constraints": ["jaw_worm_1"]},
+    {"type": "play_card", "label": "Play Defend", "card_id": "defend_red#1"},
     {"type": "use_potion", "label": "Use Strength Potion", "potion": "Strength Potion"},
     {"type": "end_turn", "label": "End Turn"}
   ]

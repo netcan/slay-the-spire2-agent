@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import URLError
 
-from sts2_agent.models import CardView, DecisionSnapshot, EnemyState, LegalAction, PlayerState
+from sts2_agent.models import CardView, DecisionSnapshot, EnemyState, LegalAction, PlayerState, PowerView, RunMapState, RunState
 from sts2_agent.policy import (
     ChatCompletionsConfig,
     ChatCompletionsParseError,
@@ -41,12 +41,53 @@ def build_snapshot() -> DecisionSnapshot:
             block=0,
             energy=3,
             gold=99,
-            hand=[CardView(card_id="card-1", name="防御", cost=1, playable=True)],
+            hand=[
+                CardView(
+                    card_id="card-1",
+                    name="防御",
+                    cost=1,
+                    playable=True,
+                    canonical_card_id="defend_red",
+                    description="获得 5 点格挡。",
+                    cost_for_turn=1,
+                    upgraded=False,
+                    target_type="Self",
+                    card_type="Skill",
+                    rarity="Starter",
+                    traits=["starter"],
+                    keywords=["block"],
+                )
+            ],
             relics=["燃烧之血"],
             potions=[],
+            powers=[PowerView(power_id="metallicize", name="金属化", amount=3, description="回合结束时获得 3 点格挡。")],
         ),
-        enemies=[EnemyState(enemy_id="1", name="小啃兽", hp=46, max_hp=46, block=0, intent="unknown")],
+        enemies=[
+            EnemyState(
+                enemy_id="1",
+                name="小啃兽",
+                hp=46,
+                max_hp=46,
+                block=0,
+                intent="unknown",
+                canonical_enemy_id="jaw_worm",
+                intent_raw="Attack",
+                intent_type="attack",
+                intent_damage=11,
+                intent_hits=1,
+                powers=[PowerView(power_id="strength", name="力量", amount=3, description="增加攻击伤害。")],
+            )
+        ],
         terminal=False,
+        run_state=RunState(
+            act=1,
+            floor=3,
+            current_room_type="CombatRoom",
+            current_location_type="Act1",
+            current_act_index=0,
+            ascension_level=0,
+            map=RunMapState(current_coord="1,2", current_node_type="monster", reachable_nodes=["monster@1,3", "elite@2,3"], source="current_map_point"),
+        ),
     )
 
 
@@ -214,6 +255,32 @@ class ChatCompletionsPolicyTests(unittest.TestCase):
         with patch("sts2_agent.policy.llm.urlopen", side_effect=URLError("refused")):
             with self.assertRaises(ChatCompletionsRequestError):
                 self.policy.decide(build_snapshot(), build_actions())
+
+    def test_summarize_snapshot_includes_rich_runtime_fields(self) -> None:
+        payload = self.policy._summarize_snapshot(build_snapshot())
+
+        self.assertEqual(payload["player"]["hand"][0]["description"], "获得 5 点格挡。")
+        self.assertEqual(payload["player"]["powers"][0]["amount"], 3)
+        self.assertEqual(payload["enemies"][0]["intent_damage"], 11)
+        self.assertEqual(payload["enemies"][0]["powers"][0]["name"], "力量")
+        self.assertEqual(payload["run_state"]["map"]["current_coord"], "1,2")
+
+    def test_summarize_snapshot_handles_missing_rich_fields(self) -> None:
+        snapshot = DecisionSnapshot(
+            session_id="sess-old",
+            decision_id="dec-old",
+            state_version=1,
+            phase="combat",
+            player=PlayerState(hp=10, max_hp=10, block=0, energy=3, gold=0, hand=[CardView(card_id="c1", name="打击", cost=1)]),
+            enemies=[EnemyState(enemy_id="e1", name="小史莱姆", hp=8, max_hp=8, block=0, intent="attack")],
+            terminal=False,
+        )
+
+        payload = self.policy._summarize_snapshot(snapshot)
+
+        self.assertNotIn("run_state", payload)
+        self.assertEqual(payload["player"]["hand"][0]["name"], "打击")
+        self.assertEqual(payload["enemies"][0]["intent"], "attack")
 
 
 if __name__ == "__main__":

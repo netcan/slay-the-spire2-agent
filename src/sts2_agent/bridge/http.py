@@ -15,7 +15,18 @@ from sts2_agent.bridge.base import (
     StaleActionError,
     UnsupportedLifecycleCommandError,
 )
-from sts2_agent.models import ActionResult, ActionSubmission, CardView, DecisionSnapshot, EnemyState, LegalAction, PlayerState
+from sts2_agent.models import (
+    ActionResult,
+    ActionSubmission,
+    CardView,
+    DecisionSnapshot,
+    EnemyState,
+    LegalAction,
+    PlayerState,
+    PowerView,
+    RunMapState,
+    RunState,
+)
 
 
 @dataclass(slots=True)
@@ -160,19 +171,42 @@ class HttpGameBridge(GameBridge):
         player_payload = payload.get("player")
         player = None
         if isinstance(player_payload, dict):
-            hand = [CardView(**item) for item in player_payload.get("hand", [])]
-            player_values = {k: v for k, v in player_payload.items() if k != "hand"}
-            player = PlayerState(hand=hand, **player_values)
+            hand = [
+                HttpGameBridge._decode_card(item)
+                for item in player_payload.get("hand", [])
+                if isinstance(item, dict)
+            ]
+            powers = [
+                HttpGameBridge._decode_power(item)
+                for item in player_payload.get("powers", [])
+                if isinstance(item, dict)
+            ]
+            player = PlayerState(
+                hp=int(player_payload.get("hp") or 0),
+                max_hp=int(player_payload.get("max_hp") or 0),
+                block=int(player_payload.get("block") or 0),
+                energy=int(player_payload.get("energy") or 0),
+                gold=int(player_payload.get("gold") or 0),
+                hand=hand,
+                draw_pile=int(player_payload.get("draw_pile") or 0),
+                discard_pile=int(player_payload.get("discard_pile") or 0),
+                exhaust_pile=int(player_payload.get("exhaust_pile") or 0),
+                relics=list(player_payload.get("relics") or []),
+                potions=list(player_payload.get("potions") or []),
+                powers=powers,
+            )
 
         enemies = []
         for item in payload.get("enemies", []):
             if isinstance(item, dict):
-                enemies.append(EnemyState(**item))
+                enemies.append(HttpGameBridge._decode_enemy(item))
 
         metadata = dict(payload.get("metadata") or {})
         compatibility = payload.get("compatibility")
         if isinstance(compatibility, dict):
             metadata["compatibility"] = compatibility
+
+        run_state = HttpGameBridge._decode_run_state(payload.get("run_state"))
 
         return DecisionSnapshot(
             session_id=str(payload.get("session_id") or ""),
@@ -185,4 +219,91 @@ class HttpGameBridge(GameBridge):
             map_nodes=list(payload.get("map_nodes") or []),
             terminal=bool(payload.get("terminal")),
             metadata=metadata,
+            run_state=run_state,
         )
+
+    @staticmethod
+    def _decode_card(payload: dict[str, Any]) -> CardView:
+        return CardView(
+            card_id=str(payload.get("card_id") or ""),
+            name=str(payload.get("name") or ""),
+            cost=int(payload.get("cost") or 0),
+            playable=bool(payload.get("playable", True)),
+            instance_card_id=payload.get("instance_card_id"),
+            canonical_card_id=payload.get("canonical_card_id"),
+            description=payload.get("description"),
+            cost_for_turn=HttpGameBridge._as_optional_int(payload.get("cost_for_turn")),
+            upgraded=payload.get("upgraded") if isinstance(payload.get("upgraded"), bool) else None,
+            target_type=payload.get("target_type"),
+            card_type=payload.get("card_type"),
+            rarity=payload.get("rarity"),
+            traits=list(payload.get("traits") or []),
+            keywords=list(payload.get("keywords") or []),
+        )
+
+    @staticmethod
+    def _decode_power(payload: dict[str, Any]) -> PowerView:
+        return PowerView(
+            power_id=str(payload.get("power_id") or ""),
+            name=str(payload.get("name") or ""),
+            amount=HttpGameBridge._as_optional_int(payload.get("amount")),
+            description=payload.get("description"),
+            canonical_power_id=payload.get("canonical_power_id"),
+        )
+
+    @staticmethod
+    def _decode_enemy(payload: dict[str, Any]) -> EnemyState:
+        return EnemyState(
+            enemy_id=str(payload.get("enemy_id") or ""),
+            name=str(payload.get("name") or ""),
+            hp=int(payload.get("hp") or 0),
+            max_hp=int(payload.get("max_hp") or 0),
+            block=int(payload.get("block") or 0),
+            intent=str(payload.get("intent") or "unknown"),
+            is_alive=bool(payload.get("is_alive", True)),
+            instance_enemy_id=payload.get("instance_enemy_id"),
+            canonical_enemy_id=payload.get("canonical_enemy_id"),
+            intent_raw=payload.get("intent_raw"),
+            intent_type=payload.get("intent_type"),
+            intent_damage=HttpGameBridge._as_optional_int(payload.get("intent_damage")),
+            intent_hits=HttpGameBridge._as_optional_int(payload.get("intent_hits")),
+            intent_block=HttpGameBridge._as_optional_int(payload.get("intent_block")),
+            intent_effects=list(payload.get("intent_effects") or []),
+            powers=[
+                HttpGameBridge._decode_power(item)
+                for item in payload.get("powers", [])
+                if isinstance(item, dict)
+            ],
+        )
+
+    @staticmethod
+    def _decode_run_state(payload: Any) -> RunState | None:
+        if not isinstance(payload, dict):
+            return None
+        map_payload = payload.get("map")
+        map_state = None
+        if isinstance(map_payload, dict):
+            map_state = RunMapState(
+                current_coord=map_payload.get("current_coord"),
+                current_node_type=map_payload.get("current_node_type"),
+                reachable_nodes=list(map_payload.get("reachable_nodes") or []),
+                source=map_payload.get("source"),
+            )
+        return RunState(
+            act=HttpGameBridge._as_optional_int(payload.get("act")),
+            floor=HttpGameBridge._as_optional_int(payload.get("floor")),
+            current_room_type=payload.get("current_room_type"),
+            current_location_type=payload.get("current_location_type"),
+            current_act_index=HttpGameBridge._as_optional_int(payload.get("current_act_index")),
+            ascension_level=HttpGameBridge._as_optional_int(payload.get("ascension_level")),
+            map=map_state,
+        )
+
+    @staticmethod
+    def _as_optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None

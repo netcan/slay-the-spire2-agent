@@ -11,6 +11,15 @@
     "exhaust_pile": 0,
     "relics": ["Burning Blood"],
     "potions": [],
+    "powers": [
+      {
+        "power_id": "metallicize",
+        "name": "Metallicize",
+        "amount": 3,
+        "description": "At end of turn gain 3 Block.",
+        "canonical_power_id": "metallicize"
+      }
+    ],
     "hand": []
   },
   "enemies": [],
@@ -18,6 +27,20 @@
   "map_nodes": [],
   "terminal": false,
   "metadata": {"room_type": "reward"},
+  "run_state": {
+    "act": 1,
+    "floor": 1,
+    "current_room_type": "RewardRoom",
+    "current_location_type": "Act1",
+    "current_act_index": 0,
+    "ascension_level": 0,
+    "map": {
+      "current_coord": "0,0",
+      "current_node_type": "monster",
+      "reachable_nodes": ["monster_left", "elite_center", "question_right"],
+      "source": "fixture"
+    }
+  },
   "legal_actions": [
     {"type": "choose_reward", "label": "Choose Inflame", "reward": "Inflame"},
     {"type": "choose_reward", "label": "Choose Pommel Strike", "reward": "Pommel Strike"},

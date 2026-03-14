@@ -18,5 +18,19 @@
   "map_nodes": [],
   "terminal": true,
   "metadata": {"room_type": "victory", "result": "win"},
+  "run_state": {
+    "act": 1,
+    "floor": 3,
+    "current_room_type": "VictoryRoom",
+    "current_location_type": "Act1",
+    "current_act_index": 0,
+    "ascension_level": 0,
+    "map": {
+      "current_coord": "1,2",
+      "current_node_type": "boss",
+      "reachable_nodes": [],
+      "source": "fixture"
+    }
+  },
   "legal_actions": []
 }

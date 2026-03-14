@@ -37,12 +37,36 @@ public abstract class WindowExtractorBase : IWindowExtractor
                     context.Player.Block,
                     context.Player.Energy,
                     context.Player.Gold,
-                    Hand = context.Player.Hand.Select(card => new { card.CardId, card.Name, card.Cost, card.Playable }).ToArray(),
+                    Hand = context.Player.Hand.Select(card => new
+                    {
+                        card.CardId,
+                        card.Name,
+                        card.Cost,
+                        card.Playable,
+                        card.InstanceCardId,
+                        card.CanonicalCardId,
+                        card.Description,
+                        card.CostForTurn,
+                        card.Upgraded,
+                        card.TargetType,
+                        card.CardType,
+                        card.Rarity,
+                        Traits = card.Traits?.ToArray() ?? Array.Empty<string>(),
+                        Keywords = card.Keywords?.ToArray() ?? Array.Empty<string>(),
+                    }).ToArray(),
                     context.Player.DrawPile,
                     context.Player.DiscardPile,
                     context.Player.ExhaustPile,
                     Relics = context.Player.Relics.ToArray(),
                     Potions = context.Player.Potions.ToArray(),
+                    Powers = context.Player.Powers?.Select(power => new
+                    {
+                        power.PowerId,
+                        power.Name,
+                        power.Amount,
+                        power.Description,
+                        power.CanonicalPowerId,
+                    }).ToArray() ?? Array.Empty<object>(),
                 },
             Enemies = context.Enemies.Select(enemy => new
             {
@@ -53,9 +77,45 @@ public abstract class WindowExtractorBase : IWindowExtractor
                 enemy.Block,
                 enemy.Intent,
                 enemy.IsAlive,
+                enemy.InstanceEnemyId,
+                enemy.CanonicalEnemyId,
+                enemy.IntentRaw,
+                enemy.IntentType,
+                enemy.IntentDamage,
+                enemy.IntentHits,
+                enemy.IntentBlock,
+                IntentEffects = enemy.IntentEffects?.ToArray() ?? Array.Empty<string>(),
+                Powers = enemy.Powers?.Select(power => new
+                {
+                    power.PowerId,
+                    power.Name,
+                    power.Amount,
+                    power.Description,
+                    power.CanonicalPowerId,
+                }).ToArray() ?? Array.Empty<object>(),
             }).ToArray(),
             Rewards = context.Rewards.ToArray(),
             MapNodes = context.MapNodes.ToArray(),
+            RunState = context.RunState is null
+                ? null
+                : new
+                {
+                    context.RunState.Act,
+                    context.RunState.Floor,
+                    context.RunState.CurrentRoomType,
+                    context.RunState.CurrentLocationType,
+                    context.RunState.CurrentActIndex,
+                    context.RunState.AscensionLevel,
+                    Map = context.RunState.Map is null
+                        ? null
+                        : new
+                        {
+                            context.RunState.Map.CurrentCoord,
+                            context.RunState.Map.CurrentNodeType,
+                            ReachableNodes = context.RunState.Map.ReachableNodes?.ToArray() ?? Array.Empty<string>(),
+                            context.RunState.Map.Source,
+                        },
+                },
             Metadata = FilterStableMetadata(context.Metadata),
             Actions = context.Actions.Select(action => new
             {
@@ -96,7 +156,8 @@ public abstract class WindowExtractorBase : IWindowExtractor
             context.MapNodes.ToArray(),
             context.Terminal,
             sessionState.Compatibility,
-            BuildMetadata(context));
+            BuildMetadata(context),
+            context.RunState is null ? null : Convert(context.RunState));
     }
 
     protected virtual IReadOnlyDictionary<string, object?> BuildMetadata(RuntimeWindowContext context)
@@ -112,17 +173,79 @@ public abstract class WindowExtractorBase : IWindowExtractor
             player.Block,
             player.Energy,
             player.Gold,
-            player.Hand.Select(card => new CardView(card.CardId, card.Name, card.Cost, card.Playable)).ToArray(),
+            player.Hand.Select(Convert).ToArray(),
             player.DrawPile,
             player.DiscardPile,
             player.ExhaustPile,
             player.Relics.ToArray(),
-            player.Potions.ToArray());
+            player.Potions.ToArray(),
+            Convert(player.Powers));
     }
 
     protected static EnemyState Convert(RuntimeEnemyState enemy)
     {
-        return new EnemyState(enemy.EnemyId, enemy.Name, enemy.Hp, enemy.MaxHp, enemy.Block, enemy.Intent, enemy.IsAlive);
+        return new EnemyState(
+            enemy.EnemyId,
+            enemy.Name,
+            enemy.Hp,
+            enemy.MaxHp,
+            enemy.Block,
+            enemy.Intent,
+            enemy.IsAlive,
+            enemy.InstanceEnemyId,
+            enemy.CanonicalEnemyId,
+            enemy.IntentRaw,
+            enemy.IntentType,
+            enemy.IntentDamage,
+            enemy.IntentHits,
+            enemy.IntentBlock,
+            enemy.IntentEffects?.ToArray() ?? Array.Empty<string>(),
+            Convert(enemy.Powers));
+    }
+
+    protected static CardView Convert(RuntimeCard card)
+    {
+        return new CardView(
+            card.CardId,
+            card.Name,
+            card.Cost,
+            card.Playable,
+            card.InstanceCardId,
+            card.CanonicalCardId,
+            card.Description,
+            card.CostForTurn,
+            card.Upgraded,
+            card.TargetType,
+            card.CardType,
+            card.Rarity,
+            card.Traits?.ToArray() ?? Array.Empty<string>(),
+            card.Keywords?.ToArray() ?? Array.Empty<string>());
+    }
+
+    protected static IReadOnlyList<PowerView> Convert(IReadOnlyList<RuntimePowerState>? powers)
+    {
+        return powers?.Select(Convert).ToArray() ?? Array.Empty<PowerView>();
+    }
+
+    protected static PowerView Convert(RuntimePowerState power)
+    {
+        return new PowerView(power.PowerId, power.Name, power.Amount, power.Description, power.CanonicalPowerId);
+    }
+
+    protected static RunState Convert(RuntimeRunState runState)
+    {
+        return new RunState(
+            runState.Act,
+            runState.Floor,
+            runState.CurrentRoomType,
+            runState.CurrentLocationType,
+            runState.CurrentActIndex,
+            runState.AscensionLevel,
+            runState.Map is null ? null : new RunMapState(
+                runState.Map.CurrentCoord,
+                runState.Map.CurrentNodeType,
+                runState.Map.ReachableNodes?.ToArray() ?? Array.Empty<string>(),
+                runState.Map.Source));
     }
 }
 

@@ -227,6 +227,128 @@ class HttpBridgeTests(unittest.TestCase):
                     )
                 )
 
+    def test_decode_snapshot_accepts_rich_runtime_fields(self) -> None:
+        payload = {
+            "session_id": "sess-live1234",
+            "decision_id": "dec-live1234",
+            "state_version": 7,
+            "phase": "combat",
+            "player": {
+                "hp": 80,
+                "max_hp": 80,
+                "block": 4,
+                "energy": 3,
+                "gold": 99,
+                "draw_pile": 10,
+                "discard_pile": 2,
+                "exhaust_pile": 0,
+                "relics": ["Burning Blood"],
+                "potions": ["Strength Potion"],
+                "powers": [
+                    {
+                        "power_id": "metallicize",
+                        "name": "Metallicize",
+                        "amount": 3,
+                        "description": "At end of turn gain 3 Block.",
+                        "canonical_power_id": "metallicize",
+                    }
+                ],
+                "hand": [
+                    {
+                        "card_id": "strike_red#0",
+                        "name": "Strike",
+                        "cost": 1,
+                        "playable": True,
+                        "instance_card_id": "strike_red#0",
+                        "canonical_card_id": "strike_red",
+                        "description": "Deal 6 damage.",
+                        "cost_for_turn": 1,
+                        "upgraded": False,
+                        "target_type": "AnyEnemy",
+                        "card_type": "Attack",
+                        "rarity": "Starter",
+                        "traits": ["starter"],
+                        "keywords": ["damage"],
+                    }
+                ],
+            },
+            "enemies": [
+                {
+                    "enemy_id": "jaw_worm_1",
+                    "name": "Jaw Worm",
+                    "hp": 38,
+                    "max_hp": 42,
+                    "block": 0,
+                    "intent": "attack_11",
+                    "is_alive": True,
+                    "instance_enemy_id": "jaw_worm_1",
+                    "canonical_enemy_id": "jaw_worm",
+                    "intent_raw": "Attack",
+                    "intent_type": "attack",
+                    "intent_damage": 11,
+                    "intent_hits": 1,
+                    "intent_effects": ["weak"],
+                    "powers": [
+                        {
+                            "power_id": "strength",
+                            "name": "Strength",
+                            "amount": 3,
+                            "description": "Increase attack damage.",
+                            "canonical_power_id": "strength",
+                        }
+                    ],
+                }
+            ],
+            "rewards": [],
+            "map_nodes": [],
+            "terminal": False,
+            "metadata": {"source": "runtime"},
+            "run_state": {
+                "act": 1,
+                "floor": 3,
+                "current_room_type": "CombatRoom",
+                "current_location_type": "Act1",
+                "current_act_index": 0,
+                "ascension_level": 0,
+                "map": {
+                    "current_coord": "1,2",
+                    "current_node_type": "monster",
+                    "reachable_nodes": ["monster@1,3", "elite@2,3"],
+                    "source": "current_map_point",
+                },
+            },
+        }
+
+        snapshot = HttpGameBridge._decode_snapshot(payload)
+
+        self.assertEqual(snapshot.player.hand[0].canonical_card_id, "strike_red")
+        self.assertEqual(snapshot.player.powers[0].name, "Metallicize")
+        self.assertEqual(snapshot.enemies[0].intent_type, "attack")
+        self.assertEqual(snapshot.enemies[0].powers[0].canonical_power_id, "strength")
+        self.assertEqual(snapshot.run_state.act, 1)
+        self.assertEqual(snapshot.run_state.map.reachable_nodes, ["monster@1,3", "elite@2,3"])
+
+    def test_decode_snapshot_keeps_backward_compatibility_when_rich_fields_missing(self) -> None:
+        payload = {
+            "session_id": "sess-old",
+            "decision_id": "dec-old",
+            "state_version": 1,
+            "phase": "combat",
+            "player": {"hp": 80, "max_hp": 80, "block": 0, "energy": 3, "gold": 99, "hand": []},
+            "enemies": [{"enemy_id": "enemy-1", "name": "Louse", "hp": 10, "max_hp": 10, "block": 0, "intent": "attack"}],
+            "rewards": [],
+            "map_nodes": [],
+            "terminal": False,
+            "metadata": {},
+        }
+
+        snapshot = HttpGameBridge._decode_snapshot(payload)
+
+        self.assertIsNone(snapshot.run_state)
+        self.assertEqual(snapshot.player.powers, [])
+        self.assertEqual(snapshot.enemies[0].intent_damage, None)
+        self.assertEqual(snapshot.enemies[0].powers, [])
+
 
 if __name__ == "__main__":
     unittest.main()

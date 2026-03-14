@@ -15,7 +15,19 @@ from sts2_agent.bridge.base import (
     StaleActionError,
 )
 from sts2_agent.ids import create_action_id, create_decision_id, create_session_id, ensure_state_version, validate_identifier
-from sts2_agent.models import ActionResult, ActionStatus, ActionSubmission, CardView, DecisionSnapshot, EnemyState, LegalAction, PlayerState
+from sts2_agent.models import (
+    ActionResult,
+    ActionStatus,
+    ActionSubmission,
+    CardView,
+    DecisionSnapshot,
+    EnemyState,
+    LegalAction,
+    PlayerState,
+    PowerView,
+    RunMapState,
+    RunState,
+)
 
 
 @dataclass(slots=True)
@@ -27,6 +39,7 @@ class WindowFixture:
     map_nodes: list[str]
     legal_actions: list[dict[str, Any]]
     metadata: dict[str, Any]
+    run_state: dict[str, Any] | None = None
     terminal: bool = False
 
 
@@ -57,11 +70,12 @@ class MockGameBridge(GameBridge):
             state_version=session.state_version,
             phase=window.phase,
             player=self._build_player(window.player),
-            enemies=[EnemyState(**enemy) for enemy in window.enemies],
+            enemies=[self._build_enemy(enemy) for enemy in window.enemies],
             rewards=deepcopy(window.rewards),
             map_nodes=deepcopy(window.map_nodes),
             terminal=window.terminal,
             metadata={"scenario": session.scenario, **deepcopy(window.metadata)},
+            run_state=self._build_run_state(window.run_state),
         )
 
     def get_legal_actions(self, session_id: str) -> list[LegalAction]:
@@ -152,6 +166,101 @@ class MockGameBridge(GameBridge):
     def _build_player(raw: dict[str, Any] | None) -> PlayerState | None:
         if raw is None:
             return None
-        hand = [CardView(**card) for card in raw.get("hand", [])]
-        payload = {k: v for k, v in raw.items() if k != "hand"}
-        return PlayerState(hand=hand, **payload)
+        hand = [MockGameBridge._build_card(card) for card in raw.get("hand", []) if isinstance(card, dict)]
+        powers = [MockGameBridge._build_power(power) for power in raw.get("powers", []) if isinstance(power, dict)]
+        return PlayerState(
+            hp=int(raw.get("hp") or 0),
+            max_hp=int(raw.get("max_hp") or 0),
+            block=int(raw.get("block") or 0),
+            energy=int(raw.get("energy") or 0),
+            gold=int(raw.get("gold") or 0),
+            hand=hand,
+            draw_pile=int(raw.get("draw_pile") or 0),
+            discard_pile=int(raw.get("discard_pile") or 0),
+            exhaust_pile=int(raw.get("exhaust_pile") or 0),
+            relics=list(raw.get("relics") or []),
+            potions=list(raw.get("potions") or []),
+            powers=powers,
+        )
+
+    @staticmethod
+    def _build_card(raw: dict[str, Any]) -> CardView:
+        return CardView(
+            card_id=str(raw.get("card_id") or ""),
+            name=str(raw.get("name") or ""),
+            cost=int(raw.get("cost") or 0),
+            playable=bool(raw.get("playable", True)),
+            instance_card_id=raw.get("instance_card_id"),
+            canonical_card_id=raw.get("canonical_card_id"),
+            description=raw.get("description"),
+            cost_for_turn=MockGameBridge._optional_int(raw.get("cost_for_turn")),
+            upgraded=raw.get("upgraded") if isinstance(raw.get("upgraded"), bool) else None,
+            target_type=raw.get("target_type"),
+            card_type=raw.get("card_type"),
+            rarity=raw.get("rarity"),
+            traits=list(raw.get("traits") or []),
+            keywords=list(raw.get("keywords") or []),
+        )
+
+    @staticmethod
+    def _build_power(raw: dict[str, Any]) -> PowerView:
+        return PowerView(
+            power_id=str(raw.get("power_id") or ""),
+            name=str(raw.get("name") or ""),
+            amount=MockGameBridge._optional_int(raw.get("amount")),
+            description=raw.get("description"),
+            canonical_power_id=raw.get("canonical_power_id"),
+        )
+
+    @staticmethod
+    def _build_enemy(raw: dict[str, Any]) -> EnemyState:
+        return EnemyState(
+            enemy_id=str(raw.get("enemy_id") or ""),
+            name=str(raw.get("name") or ""),
+            hp=int(raw.get("hp") or 0),
+            max_hp=int(raw.get("max_hp") or 0),
+            block=int(raw.get("block") or 0),
+            intent=str(raw.get("intent") or "unknown"),
+            is_alive=bool(raw.get("is_alive", True)),
+            instance_enemy_id=raw.get("instance_enemy_id"),
+            canonical_enemy_id=raw.get("canonical_enemy_id"),
+            intent_raw=raw.get("intent_raw"),
+            intent_type=raw.get("intent_type"),
+            intent_damage=MockGameBridge._optional_int(raw.get("intent_damage")),
+            intent_hits=MockGameBridge._optional_int(raw.get("intent_hits")),
+            intent_block=MockGameBridge._optional_int(raw.get("intent_block")),
+            intent_effects=list(raw.get("intent_effects") or []),
+            powers=[MockGameBridge._build_power(power) for power in raw.get("powers", []) if isinstance(power, dict)],
+        )
+
+    @staticmethod
+    def _build_run_state(raw: Any) -> RunState | None:
+        if not isinstance(raw, dict):
+            return None
+        map_payload = raw.get("map")
+        map_state = None
+        if isinstance(map_payload, dict):
+            map_state = RunMapState(
+                current_coord=map_payload.get("current_coord"),
+                current_node_type=map_payload.get("current_node_type"),
+                reachable_nodes=list(map_payload.get("reachable_nodes") or []),
+                source=map_payload.get("source"),
+            )
+        return RunState(
+            act=MockGameBridge._optional_int(raw.get("act")),
+            floor=MockGameBridge._optional_int(raw.get("floor")),
+            current_room_type=raw.get("current_room_type"),
+            current_location_type=raw.get("current_location_type"),
+            current_act_index=MockGameBridge._optional_int(raw.get("current_act_index")),
+            ascension_level=MockGameBridge._optional_int(raw.get("ascension_level")),
+            map=map_state,
+        )
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None

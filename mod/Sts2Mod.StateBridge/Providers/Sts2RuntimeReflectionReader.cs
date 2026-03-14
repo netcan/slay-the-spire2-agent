@@ -1128,6 +1128,7 @@ internal sealed class Sts2RuntimeReflectionReader
         var player = BuildPlayerState(runState, textDiagnostics);
         var enemies = BuildEnemies(runState, textDiagnostics);
         var metadata = CreateBaseMetadata(runNode, runState, DecisionPhase.Combat);
+        var runStateSnapshot = BuildRunState(runState, textDiagnostics);
         var rewardAnalysis = AnalyzeRewardPhase(runNode, runState);
         metadata["phase_detection"] = rewardAnalysis.ToMetadata();
         var actions = new List<RuntimeActionDefinition>();
@@ -1146,7 +1147,8 @@ internal sealed class Sts2RuntimeReflectionReader
                 Array.Empty<string>(),
                 Terminal: false,
                 Metadata: metadata,
-                Actions: Array.Empty<RuntimeActionDefinition>());
+                Actions: Array.Empty<RuntimeActionDefinition>(),
+                RunState: runStateSnapshot);
         }
 
         foreach (var card in GetHandCardDescriptors(runState, textDiagnostics).Where(card => card.Playable))
@@ -1162,6 +1164,7 @@ internal sealed class Sts2RuntimeReflectionReader
             }
 
             var actionMetadata = new Dictionary<string, object?> { ["playable"] = true };
+            actionMetadata["card_preview"] = BuildCardPreview(card);
             if (!string.Equals(card.NameResolution.Status, "resolved", StringComparison.Ordinal))
             {
                 foreach (var pair in RuntimeTextResolver.CreateActionDiagnostics($"actions.play_card[{card.CardId}].label", card.NameResolution))
@@ -1199,7 +1202,8 @@ internal sealed class Sts2RuntimeReflectionReader
             Array.Empty<string>(),
             Terminal: false,
             Metadata: metadata,
-            Actions: actions);
+            Actions: actions,
+            RunState: runStateSnapshot);
     }
 
     private RuntimeWindowContext BuildRewardWindow(object runNode, object runState)
@@ -1209,6 +1213,7 @@ internal sealed class Sts2RuntimeReflectionReader
         var rewards = ExtractRewards(runNode, textDiagnostics);
         var player = BuildPlayerState(runState, textDiagnostics);
         var metadata = CreateBaseMetadata(runNode, runState, DecisionPhase.Reward);
+        var runStateSnapshot = BuildRunState(runState, textDiagnostics);
         metadata["phase_detection"] = rewardAnalysis.ToMetadata();
         metadata["reward_subphase"] = rewardAnalysis.RewardSubphase;
         metadata["detection_source"] = rewardAnalysis.DetectionSource;
@@ -1281,7 +1286,8 @@ internal sealed class Sts2RuntimeReflectionReader
             Array.Empty<string>(),
             Terminal: false,
             Metadata: metadata,
-            Actions: actions);
+            Actions: actions,
+            RunState: runStateSnapshot);
     }
 
     private RuntimeWindowContext BuildMapWindow(object runNode, object runState)
@@ -1290,6 +1296,7 @@ internal sealed class Sts2RuntimeReflectionReader
         var mapNodes = ExtractMapNodes(runState, textDiagnostics, out var mapNodeSource);
         var player = BuildPlayerState(runState, textDiagnostics);
         var metadata = CreateBaseMetadata(runNode, runState, DecisionPhase.Map);
+        var runStateSnapshot = BuildRunState(runState, textDiagnostics, mapNodes, mapNodeSource);
         metadata["node_count"] = mapNodes.Count;
         metadata["window_kind"] = mapNodes.Count > 0 ? "map_ready" : "map_transition";
         metadata["map_ready"] = mapNodes.Count > 0;
@@ -1311,7 +1318,8 @@ internal sealed class Sts2RuntimeReflectionReader
             mapNodes,
             Terminal: false,
             Metadata: metadata,
-            Actions: actions);
+            Actions: actions,
+            RunState: runStateSnapshot);
     }
 
     private RuntimeWindowContext BuildTerminalWindow(object runNode, object runState)
@@ -1319,6 +1327,7 @@ internal sealed class Sts2RuntimeReflectionReader
         var textDiagnostics = new TextDiagnosticsCollector();
         var player = BuildPlayerState(runState, textDiagnostics);
         var metadata = CreateBaseMetadata(runNode, runState, DecisionPhase.Terminal);
+        var runStateSnapshot = BuildRunState(runState, textDiagnostics);
         metadata["result"] = GetBoolean(runState, "IsGameOver") ? "game_over" : "terminal";
         metadata["text_diagnostics"] = textDiagnostics.ToMetadata();
         return new RuntimeWindowContext(
@@ -1329,7 +1338,8 @@ internal sealed class Sts2RuntimeReflectionReader
             Array.Empty<string>(),
             Terminal: true,
             Metadata: metadata,
-            Actions: Array.Empty<RuntimeActionDefinition>());
+            Actions: Array.Empty<RuntimeActionDefinition>(),
+            RunState: runStateSnapshot);
     }
 
     private Dictionary<string, object?> CreateBaseMetadata(object runState, string phase)
@@ -1384,6 +1394,37 @@ internal sealed class Sts2RuntimeReflectionReader
         return metadata;
     }
 
+    private RuntimeRunState BuildRunState(
+        object runState,
+        TextDiagnosticsCollector textDiagnostics,
+        IReadOnlyList<string>? reachableNodes = null,
+        string? mapNodeSource = null)
+    {
+        var currentActIndex = GetNullableInt(runState, "CurrentActIndex");
+        var act = GetNullableInt(runState, "Act")
+                  ?? GetNullableInt(runState, "CurrentAct")
+                  ?? (currentActIndex is null ? null : currentActIndex.Value + 1);
+        var currentRoom = GetMemberValue(runState, "CurrentRoom");
+        var currentLocation = GetMemberValue(runState, "CurrentLocation");
+        var currentMapPoint = GetMemberValue(runState, "CurrentMapPoint");
+        var mapNodes = reachableNodes ?? ExtractMapNodes(runState, textDiagnostics, out mapNodeSource);
+        mapNodeSource ??= "unavailable";
+        return new RuntimeRunState(
+            Act: act,
+            Floor: GetNullableInt(runState, "ActFloor"),
+            CurrentRoomType: NormalizeTypeName(currentRoom),
+            CurrentLocationType: NormalizeTypeName(currentLocation),
+            CurrentActIndex: currentActIndex,
+            AscensionLevel: GetNullableInt(runState, "AscensionLevel"),
+            Map: new RuntimeRunMapState(
+                CurrentCoord: currentMapPoint is null ? null : DescribeMapCoord(GetMemberValue(currentMapPoint, "coord")),
+                CurrentNodeType: currentMapPoint is null
+                    ? null
+                    : ConvertToText(GetMemberValue(currentMapPoint, "PointType"), "run_state.map.current_node_type", textDiagnostics),
+                ReachableNodes: mapNodes,
+                Source: mapNodeSource));
+    }
+
     private object? GetOverlayTopScreen(object runNode)
     {
         var overlayStack = GetOverlayStack(runNode);
@@ -1408,6 +1449,7 @@ internal sealed class Sts2RuntimeReflectionReader
         var handCards = ExtractCards(GetMemberValue(playerCombatState, "Hand"), "player.hand", textDiagnostics);
         var relics = ExtractLabels(GetMemberValue(player, "Relics"), "player.relics", textDiagnostics);
         var potions = ExtractLabels(GetMemberValue(player, "PotionSlots"), "player.potions", textDiagnostics);
+        var powers = ExtractPowers(creature ?? player, "player.powers", textDiagnostics);
 
         return new RuntimePlayerState(
             Hp: GetNullableInt(creature, "CurrentHp") ?? 0,
@@ -1420,7 +1462,8 @@ internal sealed class Sts2RuntimeReflectionReader
             DiscardPile: CountCards(GetMemberValue(playerCombatState, "DiscardPile")),
             ExhaustPile: CountCards(GetMemberValue(playerCombatState, "ExhaustPile")),
             Relics: relics,
-            Potions: potions);
+            Potions: potions,
+            Powers: powers);
     }
 
     private IReadOnlyList<RuntimeEnemyState> BuildEnemies(object runState, TextDiagnosticsCollector textDiagnostics)
@@ -1432,14 +1475,27 @@ internal sealed class Sts2RuntimeReflectionReader
         }
 
         return EnumerateObjects(GetMemberValue(combatState, "Enemies"))
-            .Select((enemy, index) => new RuntimeEnemyState(
-                EnemyId: ResolveEnemyId(enemy, index),
-                Name: ConvertToText(GetMemberValue(enemy, "Name"), $"enemies[{index}].name", textDiagnostics) ?? $"enemy_{index}",
-                Hp: GetNullableInt(enemy, "CurrentHp") ?? 0,
-                MaxHp: GetNullableInt(enemy, "MaxHp") ?? 0,
-                Block: GetNullableInt(enemy, "Block") ?? 0,
-                Intent: ResolveEnemyIntent(enemy),
-                IsAlive: GetBoolean(enemy, "IsAlive", defaultValue: true)))
+            .Select((enemy, index) =>
+            {
+                var intent = ResolveEnemyIntent(enemy, $"enemies[{index}].intent", textDiagnostics);
+                return new RuntimeEnemyState(
+                    EnemyId: ResolveEnemyId(enemy, index),
+                    Name: ConvertToText(GetMemberValue(enemy, "Name"), $"enemies[{index}].name", textDiagnostics) ?? $"enemy_{index}",
+                    Hp: GetNullableInt(enemy, "CurrentHp") ?? 0,
+                    MaxHp: GetNullableInt(enemy, "MaxHp") ?? 0,
+                    Block: GetNullableInt(enemy, "Block") ?? 0,
+                    Intent: intent.Display,
+                    IsAlive: GetBoolean(enemy, "IsAlive", defaultValue: true),
+                    InstanceEnemyId: ResolveEnemyId(enemy, index),
+                    CanonicalEnemyId: ResolveEnemyCanonicalId(enemy),
+                    IntentRaw: intent.Raw,
+                    IntentType: intent.Type,
+                    IntentDamage: intent.Damage,
+                    IntentHits: intent.Hits,
+                    IntentBlock: intent.Block,
+                    IntentEffects: intent.Effects,
+                    Powers: ExtractPowers(GetMemberValue(enemy, "Monster") ?? enemy, $"enemies[{index}].powers", textDiagnostics));
+            })
             .ToArray();
     }
 
@@ -1462,7 +1518,18 @@ internal sealed class Sts2RuntimeReflectionReader
                     nameResolution.Text ?? $"card_{index}",
                     nameResolution,
                     ConvertToText(GetMemberValue(card, "TargetType")),
-                    GetBoolean(card, "IsPlayable", defaultValue: true));
+                    GetBoolean(card, "IsPlayable", defaultValue: true),
+                    ResolveCardCanonicalId(card),
+                    ResolveCardDescription(card, $"player.hand[{index}].description", textDiagnostics),
+                    ResolveCardUpgraded(card),
+                    ExtractTextList(
+                        GetMemberValue(card, "Traits") ?? GetMemberValue(card, "Tags"),
+                        $"player.hand[{index}].traits",
+                        textDiagnostics),
+                    ExtractTextList(
+                        GetMemberValue(card, "Keywords") ?? GetMemberValue(card, "KeywordIds"),
+                        $"player.hand[{index}].keywords",
+                        textDiagnostics));
             })
             .ToArray();
     }
@@ -1475,7 +1542,23 @@ internal sealed class Sts2RuntimeReflectionReader
                 Name: ConvertToText(GetMemberValue(card, "Title") ?? GetMemberValue(card, "Name") ?? card, $"{path}[{index}].name", textDiagnostics, "Title", "Name")
                       ?? $"card_{index}",
                 Cost: ResolveCardCost(card),
-                Playable: GetBoolean(card, "IsPlayable", defaultValue: true)))
+                Playable: GetBoolean(card, "IsPlayable", defaultValue: true),
+                InstanceCardId: RuntimeCardIdentity.CreateCardId(card, index),
+                CanonicalCardId: ResolveCardCanonicalId(card),
+                Description: ResolveCardDescription(card, $"{path}[{index}].description", textDiagnostics),
+                CostForTurn: ResolveCardCostForTurn(card),
+                Upgraded: ResolveCardUpgraded(card),
+                TargetType: ConvertToText(GetMemberValue(card, "TargetType"), $"{path}[{index}].target_type", textDiagnostics),
+                CardType: ConvertToText(GetMemberValue(card, "CardType") ?? GetMemberValue(card, "Type"), $"{path}[{index}].card_type", textDiagnostics),
+                Rarity: ConvertToText(GetMemberValue(card, "Rarity") ?? GetMemberValue(card, "CardRarity"), $"{path}[{index}].rarity", textDiagnostics),
+                Traits: ExtractTextList(
+                    GetMemberValue(card, "Traits") ?? GetMemberValue(card, "Tags"),
+                    $"{path}[{index}].traits",
+                    textDiagnostics),
+                Keywords: ExtractTextList(
+                    GetMemberValue(card, "Keywords") ?? GetMemberValue(card, "KeywordIds"),
+                    $"{path}[{index}].keywords",
+                    textDiagnostics)))
             .ToArray();
     }
 
@@ -2268,6 +2351,67 @@ internal sealed class Sts2RuntimeReflectionReader
                ?? 0;
     }
 
+    private static int? ResolveCardCostForTurn(object? card)
+    {
+        if (GetBoolean(card, "HasEnergyCostX"))
+        {
+            return -1;
+        }
+
+        return GetNullableInt(card, "CurrentStarCost")
+               ?? GetNullableInt(card, "CurrentEnergyCost")
+               ?? GetNullableInt(card, "StarCostForTurn")
+               ?? GetNullableInt(card, "EnergyCost");
+    }
+
+    private static bool? ResolveCardUpgraded(object? card)
+    {
+        if (GetMemberValue(card, "IsUpgraded") is bool isUpgraded)
+        {
+            return isUpgraded;
+        }
+
+        if (GetMemberValue(card, "Upgraded") is bool upgraded)
+        {
+            return upgraded;
+        }
+
+        var upgradeCount = GetNullableInt(card, "UpgradeCount");
+        return upgradeCount is null ? null : upgradeCount.Value > 0;
+    }
+
+    private static string? ResolveCardCanonicalId(object? card)
+    {
+        return ConvertToText(
+                   GetMemberValue(card, "CardId")
+                   ?? GetMemberValue(card, "CardKey")
+                   ?? GetMemberValue(card, "Key")
+                   ?? GetMemberValue(card, "Id")
+                   ?? GetMemberValue(card, "DataId")
+                   ?? GetMemberValue(card, "TemplateId")
+                   ?? GetMemberValue(card, "CanonicalId")
+                   ?? GetMemberValue(GetMemberValue(card, "Data"), "Id")
+                   ?? GetMemberValue(GetMemberValue(card, "Definition"), "Id"))
+               ?? ConvertToText(GetMemberValue(card, "InternalName"));
+    }
+
+    private static string? ResolveCardDescription(object? card, string path, TextDiagnosticsCollector textDiagnostics)
+    {
+        return ConvertToText(
+            GetMemberValue(card, "Description")
+            ?? GetMemberValue(card, "RulesText")
+            ?? GetMemberValue(card, "CardText")
+            ?? GetMemberValue(card, "BodyText")
+            ?? GetMemberValue(card, "Text"),
+            path,
+            textDiagnostics,
+            "Description",
+            "RulesText",
+            "CardText",
+            "BodyText",
+            "Text");
+    }
+
     private static string ResolveEnemyId(object enemy, int index)
     {
         return ConvertToText(GetMemberValue(enemy, "CombatId"))
@@ -2276,11 +2420,53 @@ internal sealed class Sts2RuntimeReflectionReader
                ?? $"enemy_{index}";
     }
 
-    private static string ResolveEnemyIntent(object enemy)
+    private static string? ResolveEnemyCanonicalId(object? enemy)
     {
-        return ConvertToText(GetMemberValue(enemy, "Intent"))
-               ?? ConvertToText(GetMemberValue(GetMemberValue(enemy, "Monster"), "Intent"))
-               ?? "unknown";
+        return ConvertToText(
+            GetMemberValue(enemy, "EnemyId")
+            ?? GetMemberValue(enemy, "MonsterId")
+            ?? GetMemberValue(enemy, "Id")
+            ?? GetMemberValue(enemy, "Key")
+            ?? GetMemberValue(enemy, "TemplateId")
+            ?? GetMemberValue(GetMemberValue(enemy, "Monster"), "EnemyId")
+            ?? GetMemberValue(GetMemberValue(enemy, "Monster"), "Id"));
+    }
+
+    private static string? ResolvePowerCanonicalId(object? power)
+    {
+        return ConvertToText(
+            GetMemberValue(power, "PowerId")
+            ?? GetMemberValue(power, "Id")
+            ?? GetMemberValue(power, "Key")
+            ?? GetMemberValue(power, "TemplateId")
+            ?? GetMemberValue(power, "CanonicalId"));
+    }
+
+    private static EnemyIntentDescriptor ResolveEnemyIntent(object enemy, string path, TextDiagnosticsCollector textDiagnostics)
+    {
+        var raw = ConvertToText(
+            GetMemberValue(enemy, "Intent")
+            ?? GetMemberValue(GetMemberValue(enemy, "Monster"), "Intent"),
+            path,
+            textDiagnostics,
+            "Intent");
+        var type = NormalizeIntentType(raw, enemy);
+        return new EnemyIntentDescriptor(
+            Display: raw ?? "unknown",
+            Raw: raw,
+            Type: type,
+            Damage: GetNullableInt(enemy, "IntentDamage")
+                    ?? GetNullableInt(enemy, "DisplayedIntentDamage")
+                    ?? GetNullableInt(enemy, "AttackDamage")
+                    ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentDamage"),
+            Hits: GetNullableInt(enemy, "IntentHits")
+                  ?? GetNullableInt(enemy, "AttackCount")
+                  ?? GetNullableInt(enemy, "HitCount")
+                  ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentHits"),
+            Block: GetNullableInt(enemy, "IntentBlock")
+                   ?? GetNullableInt(enemy, "BlockAmount")
+                   ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentBlock"),
+            Effects: ExtractIntentEffects(enemy, raw));
     }
 
     private static IReadOnlyList<string> BuildTargetConstraints(string? targetType, IReadOnlyList<string> liveEnemyIds)
@@ -2298,6 +2484,211 @@ internal sealed class Sts2RuntimeReflectionReader
         }
 
         return liveEnemyIds;
+    }
+
+    private IReadOnlyList<RuntimePowerState> ExtractPowers(object? source, string path, TextDiagnosticsCollector textDiagnostics)
+    {
+        var collection = ResolvePowerCollection(source);
+        return EnumerateObjects(collection)
+            .Select((power, index) => DescribePower(power, $"{path}[{index}]", textDiagnostics))
+            .Where(power => power is not null)
+            .Cast<RuntimePowerState>()
+            .ToArray();
+    }
+
+    private static object? ResolvePowerCollection(object? source)
+    {
+        if (source is null)
+        {
+            return null;
+        }
+
+        foreach (var memberName in new[] { "Powers", "StatusEffects", "Buffs", "Debuffs" })
+        {
+            var collection = GetMemberValue(source, memberName);
+            if (collection is not null)
+            {
+                return collection;
+            }
+        }
+
+        foreach (var nestedName in new[] { "Creature", "Monster" })
+        {
+            var nested = GetMemberValue(source, nestedName);
+            if (nested is null || ReferenceEquals(nested, source))
+            {
+                continue;
+            }
+
+            var collection = ResolvePowerCollection(nested);
+            if (collection is not null)
+            {
+                return collection;
+            }
+        }
+
+        return null;
+    }
+
+    private RuntimePowerState? DescribePower(object? power, string path, TextDiagnosticsCollector textDiagnostics)
+    {
+        var name = ConvertToText(
+            GetMemberValue(power, "Name") ?? GetMemberValue(power, "DisplayName") ?? power,
+            $"{path}.name",
+            textDiagnostics,
+            "Name",
+            "DisplayName");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        return new RuntimePowerState(
+            PowerId: ResolvePowerCanonicalId(power) ?? name,
+            Name: name,
+            Amount: GetNullableInt(power, "Amount")
+                    ?? GetNullableInt(power, "Stacks")
+                    ?? GetNullableInt(power, "Value"),
+            Description: ConvertToText(
+                GetMemberValue(power, "Description")
+                ?? GetMemberValue(power, "RulesText")
+                ?? GetMemberValue(power, "Text"),
+                $"{path}.description",
+                textDiagnostics,
+                "Description",
+                "RulesText",
+                "Text"),
+            CanonicalPowerId: ResolvePowerCanonicalId(power));
+    }
+
+    private static IReadOnlyList<string> ExtractTextList(object? collection, string path, TextDiagnosticsCollector textDiagnostics)
+    {
+        return EnumerateObjects(collection)
+            .Select((item, index) => ConvertToText(item, $"{path}[{index}]", textDiagnostics, "Name", "Label", "Title", "Text", "Id", "Key"))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static string? NormalizeIntentType(string? raw, object enemy)
+    {
+        var direct = ConvertToText(
+            GetMemberValue(enemy, "IntentType")
+            ?? GetMemberValue(enemy, "IntentKind")
+            ?? GetMemberValue(GetMemberValue(enemy, "Monster"), "IntentType"));
+        if (!string.IsNullOrWhiteSpace(direct))
+        {
+            return direct;
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var normalized = raw.ToLowerInvariant();
+        var hasAttack = normalized.Contains("attack", StringComparison.Ordinal);
+        var hasBlock = normalized.Contains("block", StringComparison.Ordinal) || normalized.Contains("defend", StringComparison.Ordinal);
+        var hasBuff = normalized.Contains("buff", StringComparison.Ordinal);
+        var hasDebuff = normalized.Contains("debuff", StringComparison.Ordinal) ||
+                        normalized.Contains("weak", StringComparison.Ordinal) ||
+                        normalized.Contains("frail", StringComparison.Ordinal) ||
+                        normalized.Contains("vulnerable", StringComparison.Ordinal);
+
+        if (hasAttack && hasBlock)
+        {
+            return "attack_block";
+        }
+
+        if (hasAttack && hasDebuff)
+        {
+            return "attack_debuff";
+        }
+
+        if (hasAttack && hasBuff)
+        {
+            return "attack_buff";
+        }
+
+        if (hasAttack)
+        {
+            return "attack";
+        }
+
+        if (hasBlock)
+        {
+            return "block";
+        }
+
+        if (hasDebuff)
+        {
+            return "debuff";
+        }
+
+        if (hasBuff)
+        {
+            return "buff";
+        }
+
+        return normalized.Replace(' ', '_');
+    }
+
+    private static IReadOnlyList<string> ExtractIntentEffects(object enemy, string? raw)
+    {
+        var effects = new List<string>();
+        foreach (var item in EnumerateObjects(GetMemberValue(enemy, "IntentEffects") ?? GetMemberValue(enemy, "IntentKeywords")))
+        {
+            var text = ConvertToText(item);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                effects.Add(text!);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            var normalized = raw.ToLowerInvariant();
+            if (normalized.Contains("weak", StringComparison.Ordinal))
+            {
+                effects.Add("weak");
+            }
+
+            if (normalized.Contains("frail", StringComparison.Ordinal))
+            {
+                effects.Add("frail");
+            }
+
+            if (normalized.Contains("vulnerable", StringComparison.Ordinal))
+            {
+                effects.Add("vulnerable");
+            }
+        }
+
+        return effects
+            .Where(effect => !string.IsNullOrWhiteSpace(effect))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static IReadOnlyDictionary<string, object?> BuildCardPreview(HandCardDescriptor card)
+    {
+        var preview = new Dictionary<string, object?>
+        {
+            ["card_id"] = card.CardId,
+            ["card_name"] = card.Name,
+            ["target_type"] = card.TargetType,
+            ["canonical_card_id"] = card.CanonicalCardId,
+            ["description"] = card.Description,
+            ["upgraded"] = card.Upgraded,
+            ["traits"] = card.Traits,
+            ["keywords"] = card.Keywords,
+        };
+        return preview
+            .Where(pair => pair.Value is not null &&
+                           (!(pair.Value is string text) || !string.IsNullOrWhiteSpace(text)) &&
+                           (!(pair.Value is IReadOnlyCollection<string> values) || values.Count > 0))
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
     }
 
     private static List<string> ExtractLabels(object? collection, string path, TextDiagnosticsCollector textDiagnostics)
@@ -2470,9 +2861,38 @@ internal sealed class Sts2RuntimeReflectionReader
         return target?.GetType().FullName ?? target?.GetType().Name;
     }
 
+    private static string? NormalizeTypeName(object? target)
+    {
+        var type = target as Type ?? target?.GetType();
+        if (type is null)
+        {
+            return null;
+        }
+
+        return type.Name;
+    }
+
     private readonly record struct RuntimeRoot(object GameInstance, object? RunNode, object? RunState);
 
-    private readonly record struct HandCardDescriptor(string CardId, string Name, TextResolutionResult NameResolution, string? TargetType, bool Playable);
+    private readonly record struct HandCardDescriptor(
+        string CardId,
+        string Name,
+        TextResolutionResult NameResolution,
+        string? TargetType,
+        bool Playable,
+        string? CanonicalCardId,
+        string? Description,
+        bool? Upgraded,
+        IReadOnlyList<string> Traits,
+        IReadOnlyList<string> Keywords);
+    private readonly record struct EnemyIntentDescriptor(
+        string Display,
+        string? Raw,
+        string? Type,
+        int? Damage,
+        int? Hits,
+        int? Block,
+        IReadOnlyList<string> Effects);
     private readonly record struct RewardOption(string Label, TextResolutionResult Resolution);
     private readonly record struct RewardPhaseAnalysis(
         bool TreatAsReward,

@@ -220,29 +220,107 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                     Gold: 99,
                     Hand: new[]
                     {
-                        new RuntimeCard("strike_red", "Strike", 1),
-                        new RuntimeCard("defend_red", "Defend", 1),
+                        new RuntimeCard(
+                            "strike_red#0",
+                            "Strike",
+                            1,
+                            Playable: true,
+                            InstanceCardId: "strike_red#0",
+                            CanonicalCardId: "strike_red",
+                            Description: "Deal 6 damage.",
+                            CostForTurn: 1,
+                            Upgraded: false,
+                            TargetType: "AnyEnemy",
+                            CardType: "Attack",
+                            Rarity: "Starter",
+                            Traits: new[] { "starter" },
+                            Keywords: new[] { "damage" }),
+                        new RuntimeCard(
+                            "defend_red#1",
+                            "Defend",
+                            1,
+                            Playable: true,
+                            InstanceCardId: "defend_red#1",
+                            CanonicalCardId: "defend_red",
+                            Description: "Gain 5 Block.",
+                            CostForTurn: 1,
+                            Upgraded: false,
+                            TargetType: "Self",
+                            CardType: "Skill",
+                            Rarity: "Starter",
+                            Traits: new[] { "starter" },
+                            Keywords: new[] { "block" }),
                     },
                     DrawPile: 12,
                     DiscardPile: 4,
                     ExhaustPile: 0,
                     Relics: new[] { "Burning Blood" },
-                    Potions: new[] { "Strength Potion" }),
-                new[] { new RuntimeEnemyState("jaw_worm_1", "Jaw Worm", 38, 42, 0, "attack_11") },
+                    Potions: new[] { "Strength Potion" },
+                    Powers: new[]
+                    {
+                        new RuntimePowerState("metallicize", "Metallicize", 3, "At the end of your turn, gain 3 Block.", "metallicize"),
+                    }),
+                new[]
+                {
+                    new RuntimeEnemyState(
+                        "jaw_worm_1",
+                        "Jaw Worm",
+                        38,
+                        42,
+                        0,
+                        "attack_11",
+                        IsAlive: true,
+                        InstanceEnemyId: "jaw_worm_1",
+                        CanonicalEnemyId: "jaw_worm",
+                        IntentRaw: "Attack",
+                        IntentType: "attack",
+                        IntentDamage: 11,
+                        IntentHits: 1,
+                        IntentBlock: null,
+                        IntentEffects: Array.Empty<string>(),
+                        Powers: new[]
+                        {
+                            new RuntimePowerState("strength", "Strength", 3, "Increases attack damage.", "strength"),
+                        }),
+                },
                 Array.Empty<string>(),
                 Array.Empty<string>(),
                 Terminal: false,
                 Metadata: new Dictionary<string, object?> { ["room_type"] = "combat", ["turn"] = 1 },
                 Actions: new[]
                 {
-                    new RuntimeActionDefinition("play_card", "Play Strike", new Dictionary<string, object?> { ["card_id"] = "strike_red" }, new[] { "jaw_worm_1" }),
-                    new RuntimeActionDefinition("play_card", "Play Defend", new Dictionary<string, object?> { ["card_id"] = "defend_red" }),
+                    new RuntimeActionDefinition("play_card", "Play Strike", new Dictionary<string, object?> { ["card_id"] = "strike_red#0" }, new[] { "jaw_worm_1" }),
+                    new RuntimeActionDefinition("play_card", "Play Defend", new Dictionary<string, object?> { ["card_id"] = "defend_red#1" }),
                     new RuntimeActionDefinition("use_potion", "Use Strength Potion", new Dictionary<string, object?> { ["potion"] = "Strength Potion" }),
                     new RuntimeActionDefinition("end_turn", "End Turn", new Dictionary<string, object?>()),
-                }),
+                },
+                RunState: new RuntimeRunState(
+                    Act: 1,
+                    Floor: 1,
+                    CurrentRoomType: "CombatRoom",
+                    CurrentLocationType: "Act1",
+                    CurrentActIndex: 0,
+                    AscensionLevel: 0,
+                    Map: new RuntimeRunMapState(
+                        CurrentCoord: "0,0",
+                        CurrentNodeType: "monster",
+                        ReachableNodes: new[] { "monster_left@0,1", "elite_center@1,1", "question_right@2,1" },
+                        Source: "fixture"))),
             [DecisionPhase.Map] = new RuntimeWindowContext(
                 DecisionPhase.Map,
-                new RuntimePlayerState(70, 80, 0, 0, 116, Array.Empty<RuntimeCard>(), 12, 4, 0, new[] { "Burning Blood" }, Array.Empty<string>()),
+                new RuntimePlayerState(
+                    70,
+                    80,
+                    0,
+                    0,
+                    116,
+                    Array.Empty<RuntimeCard>(),
+                    12,
+                    4,
+                    0,
+                    new[] { "Burning Blood" },
+                    Array.Empty<string>(),
+                    new[] { new RuntimePowerState("metallicize", "Metallicize", 3, "At the end of your turn, gain 3 Block.", "metallicize") }),
                 Array.Empty<RuntimeEnemyState>(),
                 Array.Empty<string>(),
                 new[] { "monster_left", "elite_center", "question_right" },
@@ -253,7 +331,19 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                     new RuntimeActionDefinition("choose_map_node", "Choose monster_left", new Dictionary<string, object?> { ["node"] = "monster_left" }),
                     new RuntimeActionDefinition("choose_map_node", "Choose elite_center", new Dictionary<string, object?> { ["node"] = "elite_center" }),
                     new RuntimeActionDefinition("choose_map_node", "Choose question_right", new Dictionary<string, object?> { ["node"] = "question_right" }),
-                }),
+                },
+                RunState: new RuntimeRunState(
+                    Act: 1,
+                    Floor: 2,
+                    CurrentRoomType: "MapRoom",
+                    CurrentLocationType: "Act1",
+                    CurrentActIndex: 0,
+                    AscensionLevel: 0,
+                    Map: new RuntimeRunMapState(
+                        CurrentCoord: "0,1",
+                        CurrentNodeType: "monster",
+                        ReachableNodes: new[] { "monster_left", "elite_center", "question_right" },
+                        Source: "fixture"))),
             [DecisionPhase.Terminal] = new RuntimeWindowContext(
                 DecisionPhase.Terminal,
                 new RuntimePlayerState(63, 80, 0, 0, 116, Array.Empty<RuntimeCard>(), 0, 0, 0, new[] { "Burning Blood" }, Array.Empty<string>()),
@@ -262,7 +352,15 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                 Array.Empty<string>(),
                 Terminal: true,
                 Metadata: new Dictionary<string, object?> { ["room_type"] = "victory", ["result"] = "win" },
-                Actions: Array.Empty<RuntimeActionDefinition>())
+                Actions: Array.Empty<RuntimeActionDefinition>(),
+                RunState: new RuntimeRunState(
+                    Act: 1,
+                    Floor: 3,
+                    CurrentRoomType: "VictoryRoom",
+                    CurrentLocationType: "Act1",
+                    CurrentActIndex: 0,
+                    AscensionLevel: 0,
+                    Map: new RuntimeRunMapState(CurrentCoord: "1,2", CurrentNodeType: "boss", ReachableNodes: Array.Empty<string>(), Source: "fixture")))
         };
     }
 
@@ -321,7 +419,19 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
 
     private static Dictionary<string, RuntimeWindowContext> CreateRewardWindows()
     {
-        var player = new RuntimePlayerState(70, 80, 0, 0, 116, Array.Empty<RuntimeCard>(), 12, 4, 0, new[] { "Burning Blood" }, Array.Empty<string>());
+        var player = new RuntimePlayerState(
+            70,
+            80,
+            0,
+            0,
+            116,
+            Array.Empty<RuntimeCard>(),
+            12,
+            4,
+            0,
+            new[] { "Burning Blood" },
+            Array.Empty<string>(),
+            new[] { new RuntimePowerState("metallicize", "Metallicize", 3, "At the end of your turn, gain 3 Block.", "metallicize") });
 
         var rewardChoiceLabels = new[]
         {
@@ -374,7 +484,19 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                     ["reward_subphase"] = "reward_choice",
                     ["reward_skip_available"] = true,
                 },
-                Actions: rewardChoiceActions),
+                Actions: rewardChoiceActions,
+                RunState: new RuntimeRunState(
+                    Act: 1,
+                    Floor: 1,
+                    CurrentRoomType: "RewardRoom",
+                    CurrentLocationType: "Act1",
+                    CurrentActIndex: 0,
+                    AscensionLevel: 0,
+                    Map: new RuntimeRunMapState(
+                        CurrentCoord: "0,0",
+                        CurrentNodeType: "monster",
+                        ReachableNodes: new[] { "monster_left", "elite_center", "question_right" },
+                        Source: "fixture"))),
             ["reward_card_selection"] = new RuntimeWindowContext(
                 DecisionPhase.Reward,
                 player,
@@ -389,7 +511,19 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                     ["reward_subphase"] = "card_reward_selection",
                     ["reward_skip_available"] = true,
                 },
-                Actions: cardChoiceActions),
+                Actions: cardChoiceActions,
+                RunState: new RuntimeRunState(
+                    Act: 1,
+                    Floor: 1,
+                    CurrentRoomType: "RewardRoom",
+                    CurrentLocationType: "Act1",
+                    CurrentActIndex: 0,
+                    AscensionLevel: 0,
+                    Map: new RuntimeRunMapState(
+                        CurrentCoord: "0,0",
+                        CurrentNodeType: "monster",
+                        ReachableNodes: new[] { "monster_left", "elite_center", "question_right" },
+                        Source: "fixture"))),
         };
     }
 }

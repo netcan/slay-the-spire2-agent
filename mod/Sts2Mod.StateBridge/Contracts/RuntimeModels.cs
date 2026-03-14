@@ -1,6 +1,42 @@
 namespace Sts2Mod.StateBridge.Contracts;
 
-public sealed record RuntimeCard(string CardId, string Name, int Cost, bool Playable = true);
+public sealed record RuntimePowerState(
+    string PowerId,
+    string Name,
+    int? Amount = null,
+    string? Description = null,
+    string? CanonicalPowerId = null);
+
+public sealed record RuntimeRunMapState(
+    string? CurrentCoord = null,
+    string? CurrentNodeType = null,
+    IReadOnlyList<string>? ReachableNodes = null,
+    string? Source = null);
+
+public sealed record RuntimeRunState(
+    int? Act = null,
+    int? Floor = null,
+    string? CurrentRoomType = null,
+    string? CurrentLocationType = null,
+    int? CurrentActIndex = null,
+    int? AscensionLevel = null,
+    RuntimeRunMapState? Map = null);
+
+public sealed record RuntimeCard(
+    string CardId,
+    string Name,
+    int Cost,
+    bool Playable = true,
+    string? InstanceCardId = null,
+    string? CanonicalCardId = null,
+    string? Description = null,
+    int? CostForTurn = null,
+    bool? Upgraded = null,
+    string? TargetType = null,
+    string? CardType = null,
+    string? Rarity = null,
+    IReadOnlyList<string>? Traits = null,
+    IReadOnlyList<string>? Keywords = null);
 
 public sealed record RuntimePlayerState(
     int Hp,
@@ -13,7 +49,8 @@ public sealed record RuntimePlayerState(
     int DiscardPile,
     int ExhaustPile,
     IReadOnlyList<string> Relics,
-    IReadOnlyList<string> Potions);
+    IReadOnlyList<string> Potions,
+    IReadOnlyList<RuntimePowerState>? Powers = null);
 
 public sealed record RuntimeEnemyState(
     string EnemyId,
@@ -22,7 +59,16 @@ public sealed record RuntimeEnemyState(
     int MaxHp,
     int Block,
     string Intent,
-    bool IsAlive = true);
+    bool IsAlive = true,
+    string? InstanceEnemyId = null,
+    string? CanonicalEnemyId = null,
+    string? IntentRaw = null,
+    string? IntentType = null,
+    int? IntentDamage = null,
+    int? IntentHits = null,
+    int? IntentBlock = null,
+    IReadOnlyList<string>? IntentEffects = null,
+    IReadOnlyList<RuntimePowerState>? Powers = null);
 
 public sealed record RuntimeActionDefinition(
     string Type,
@@ -39,4 +85,5 @@ public sealed record RuntimeWindowContext(
     IReadOnlyList<string> MapNodes,
     bool Terminal,
     IReadOnlyDictionary<string, object?> Metadata,
-    IReadOnlyList<RuntimeActionDefinition> Actions);
+    IReadOnlyList<RuntimeActionDefinition> Actions,
+    RuntimeRunState? RunState = null);
