@@ -43,3 +43,43 @@ python tools/validate_mod_bridge.py
 - 结果：bridge 已成功挂到真实游戏进程，但因为当前停留在主菜单、没有活动 run，`/snapshot` 返回 `500 Internal Server Error`，因此本次只记录到失败诊断，未进入真实 `POST /apply` 冒烟阶段。
 - 结果 artifacts：`tmp/live-apply-validation/20260314-010134/result.json`
 - 后续操作：进入一局实际 run，并在需要写入验证时以 `read_only=false` 重新执行 `python tools/validate_live_apply.py --apply --allow-write ...`
+
+### 2026-03-14（战斗窗口二次联调）
+
+- 实际 `/health`：
+  - `provider_mode = "in-game-runtime"`
+  - `read_only = false`
+  - `status = "live runtime attached; phase=combat; game_version=v0.98.3 (cb602cef)"`
+- 在真实战斗窗口中，`/snapshot` 与 `/actions` 已可稳定读取；两张 `防御`、两张 `打击` 仍保持不同 `card_id` / `action_id`。
+- 对 `play_card` 与 `end_turn` 的真实 `POST /apply` 均返回：
+  - `status = "failed"`
+  - `error_code = "action_timeout"`
+- 对应 artifacts：
+  - `tmp/live-apply-validation/20260314-073334`
+  - `tmp/live-apply-validation/20260314-073406`
+- 结论：问题已缩小到 in-game action queue 的消费链路，而不是动作选择、只读保护或 stale decision 校验。
+
+### 2026-03-14（战斗窗口成功冒烟）
+
+- 执行命令：`python tools/validate_live_apply.py --enable-writes --apply --allow-write --wait-seconds 5`
+- 实际 `/health`：
+  - `provider_mode = "in-game-runtime"`
+  - `read_only = false`
+  - `status = "live runtime attached; phase=combat; game_version=v0.98.3 (cb602cef)"`
+- 自动候选动作：
+  - `action_id = "act-4187d7f9"`
+  - `type = "play_card"`
+  - `label = "Play 防御"`
+- `POST /apply` 返回：
+  - `http_status = 200`
+  - `status = "accepted"`
+  - `message = "Played card 'card-c35cc4f2'."`
+  - `queue_stage = "completed"`
+  - `elapsed_ms = 39`
+- 状态推进证据：
+  - `decision_id_changed`
+  - `state_version_changed`
+  - `action_no_longer_legal`
+  - `player_energy_changed`
+- 对应 artifacts：`tmp/live-apply-validation/20260314-081224`
+- 结论：真实战斗窗口中的 in-game action queue 已能在游戏线程 dequeue + execute，`action_timeout` 问题已完成回归验证。

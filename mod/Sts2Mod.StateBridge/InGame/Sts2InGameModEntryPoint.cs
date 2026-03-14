@@ -1,8 +1,10 @@
 #if STS2_REAL_RUNTIME
+using Godot;
 using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using Sts2Mod.StateBridge.Configuration;
 using Sts2Mod.StateBridge.Logging;
 using Sts2Mod.StateBridge.Providers;
@@ -16,6 +18,7 @@ public sealed class Sts2InGameModEntryPoint
     private static readonly Harmony Harmony = new("sts2-agent.bridge");
     private static ConsoleBridgeLogger? _logger;
     private static ModBootstrap? _bootstrap;
+    private static BridgePumpNode? _pumpNode;
     private static bool _initialized;
 
     public static void Initialize()
@@ -40,19 +43,21 @@ public sealed class Sts2InGameModEntryPoint
             _bootstrap = new ModBootstrap(effectiveOptions, provider, _logger);
             _bootstrap.StartAsync().GetAwaiter().GetResult();
             Harmony.PatchAll(Assembly.GetExecutingAssembly());
+            EnsurePumpNodeAttached();
             _initialized = true;
             _logger.Info("STS2 in-game bridge bootstrap initialized");
         }
     }
 
-    internal static void OnGameTick()
+    internal static void OnGameTick(string source = "unknown")
     {
         if (!_initialized)
         {
             return;
         }
 
-        InGameRuntimeCoordinator.Tick();
+        EnsurePumpNodeAttached();
+        InGameRuntimeCoordinator.Tick(source);
     }
 
     internal static void Shutdown()
@@ -67,6 +72,11 @@ public sealed class Sts2InGameModEntryPoint
             try
             {
                 InGameRuntimeCoordinator.Shutdown();
+                if (_pumpNode is not null && GodotObject.IsInstanceValid(_pumpNode))
+                {
+                    _pumpNode.QueueFree();
+                    _pumpNode = null;
+                }
                 _bootstrap?.StopAsync().GetAwaiter().GetResult();
             }
             finally
@@ -83,14 +93,14 @@ public sealed class Sts2InGameModEntryPoint
     {
         var managedDir = Path.GetDirectoryName(typeof(NGame).Assembly.Location);
         var writesEnabled = string.Equals(
-            Environment.GetEnvironmentVariable("STS2_BRIDGE_ENABLE_WRITES"),
+            System.Environment.GetEnvironmentVariable("STS2_BRIDGE_ENABLE_WRITES"),
             "true",
             StringComparison.OrdinalIgnoreCase);
 
         return new BridgeOptions
         {
-            Host = Environment.GetEnvironmentVariable("STS2_BRIDGE_HOST") ?? "127.0.0.1",
-            Port = int.TryParse(Environment.GetEnvironmentVariable("STS2_BRIDGE_PORT"), out var port) ? port : 17654,
+            Host = System.Environment.GetEnvironmentVariable("STS2_BRIDGE_HOST") ?? "127.0.0.1",
+            Port = int.TryParse(System.Environment.GetEnvironmentVariable("STS2_BRIDGE_PORT"), out var port) ? port : 17654,
             ProtocolVersion = "0.1.0",
             ModVersion = typeof(Sts2InGameModEntryPoint).Assembly.GetName().Version?.ToString() ?? "0.1.0",
             ProviderMode = "in-game-runtime",
@@ -101,14 +111,65 @@ public sealed class Sts2InGameModEntryPoint
             ReadOnly = !writesEnabled,
         };
     }
+
+    private static void EnsurePumpNodeAttached()
+    {
+        if (_pumpNode is not null && GodotObject.IsInstanceValid(_pumpNode))
+        {
+            return;
+        }
+
+        var gameInstance = NGame.Instance;
+        if (gameInstance is null)
+        {
+            return;
+        }
+
+        var existing = gameInstance.GetNodeOrNull<BridgePumpNode>(BridgePumpNode.NodeNameValue);
+        if (existing is not null)
+        {
+            _pumpNode = existing;
+            return;
+        }
+
+        var pumpNode = new BridgePumpNode();
+        gameInstance.AddChild(pumpNode);
+        _pumpNode = pumpNode;
+        _logger?.Info("Attached bridge pump node to NGame.");
+    }
 }
 
-[HarmonyPatch(typeof(NGame), "_Process")]
-internal static class NGameProcessPatch
+[HarmonyPatch(typeof(NGame), "_Ready")]
+internal static class NGameReadyPatch
 {
     private static void Postfix()
     {
-        Sts2InGameModEntryPoint.OnGameTick();
+        Sts2InGameModEntryPoint.OnGameTick("harmony_n_game_ready");
+    }
+}
+
+[HarmonyPatch(typeof(NGame), "_Notification")]
+internal static class NGameNotificationPatch
+{
+    private static void Postfix(int what)
+    {
+        if (what == Node.NotificationProcess)
+        {
+            Sts2InGameModEntryPoint.OnGameTick("harmony_n_game_notification_process");
+        }
+        else if (what == Node.NotificationPhysicsProcess)
+        {
+            Sts2InGameModEntryPoint.OnGameTick("harmony_n_game_notification_physics_process");
+        }
+    }
+}
+
+[HarmonyPatch(typeof(NControllerManager), "_Process")]
+internal static class NControllerManagerProcessPatch
+{
+    private static void Postfix()
+    {
+        Sts2InGameModEntryPoint.OnGameTick("harmony_n_controller_manager_process");
     }
 }
 

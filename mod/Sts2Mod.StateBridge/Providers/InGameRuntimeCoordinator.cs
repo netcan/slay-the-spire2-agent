@@ -16,6 +16,8 @@ internal static class InGameRuntimeCoordinator
     private static IBridgeLogger? _logger;
     private static ExportedWindow? _currentWindow;
     private static string? _lastTickError;
+    private static int _tickCount;
+    private static DateTimeOffset? _lastTickAt;
     private static bool _initialized;
 
     public static bool IsInitialized
@@ -51,6 +53,8 @@ internal static class InGameRuntimeCoordinator
             _initialized = true;
             _lastTickError = null;
             _currentWindow = null;
+            _tickCount = 0;
+            _lastTickAt = null;
             logger.Info("Initialized in-game runtime coordinator");
         }
     }
@@ -71,6 +75,8 @@ internal static class InGameRuntimeCoordinator
 
             _currentWindow = null;
             _lastTickError = null;
+            _tickCount = 0;
+            _lastTickAt = null;
             _extractors = null;
             _reader = null;
             _sessionState = null;
@@ -78,12 +84,13 @@ internal static class InGameRuntimeCoordinator
         }
     }
 
-    public static void Tick()
+    public static void Tick(string source)
     {
         Sts2RuntimeReflectionReader? reader;
         BridgeSessionState? sessionState;
         Dictionary<string, IWindowExtractor>? extractors;
         IBridgeLogger? logger;
+        int tickCount;
         lock (Gate)
         {
             if (!_initialized)
@@ -91,10 +98,13 @@ internal static class InGameRuntimeCoordinator
                 return;
             }
 
+            _tickCount++;
+            _lastTickAt = DateTimeOffset.UtcNow;
             reader = _reader;
             sessionState = _sessionState;
             extractors = _extractors;
             logger = _logger;
+            tickCount = _tickCount;
         }
 
         if (reader is null || sessionState is null || extractors is null)
@@ -122,7 +132,7 @@ internal static class InGameRuntimeCoordinator
             logger?.Warn($"In-game tick could not capture runtime window: {ex.Message}");
         }
 
-        ProcessPendingActions(reader, logger);
+        ProcessPendingActions(reader, logger, tickCount, source);
     }
 
     public static bool TryGetCurrentWindow(out ExportedWindow window, out string? error)
@@ -144,12 +154,15 @@ internal static class InGameRuntimeCoordinator
 
     public static ActionResponse ApplyAction(ActionRequest request, bool readOnly)
     {
+        request = EnsureRequestId(request);
         if (readOnly)
         {
             return CreateRejectedResponse(request, request.ActionId, "read_only", "Bridge is running in read-only mode.");
         }
 
         PendingAction pending;
+        int tickCount;
+        int queueDepth;
         lock (Gate)
         {
             if (!_initialized)
@@ -159,22 +172,34 @@ internal static class InGameRuntimeCoordinator
 
             pending = new PendingAction(request);
             PendingActions.Enqueue(pending);
+            tickCount = _tickCount;
+            queueDepth = PendingActions.Count;
         }
+        pending.Trace.MarkEnqueued(tickCount, Environment.CurrentManagedThreadId);
+        _logger?.Info($"Enqueued in-game action request_id={request.RequestId} action_id={request.ActionId} decision_id={request.DecisionId} queue_depth={queueDepth}");
 
-        if (!pending.Completion.Task.Wait(TimeSpan.FromSeconds(2)))
+        if (!pending.Completion.Task.Wait(TimeSpan.FromSeconds(3)))
         {
-            return CreateFailedResponse(request, request.ActionId, "action_timeout", "Timed out waiting for the game thread to process the action.");
+            var metadata = CreateTraceMetadata(pending);
+            _logger?.Warn($"Timed out waiting for in-game action request_id={request.RequestId} action_id={request.ActionId} stage={metadata["queue_stage"]}");
+            return CreateFailedResponse(
+                request,
+                request.ActionId,
+                "action_timeout",
+                "Timed out waiting for the game thread to process the action.",
+                metadata);
         }
 
         return pending.Completion.Task.GetAwaiter().GetResult();
     }
 
-    private static void ProcessPendingActions(Sts2RuntimeReflectionReader reader, IBridgeLogger? logger)
+    private static void ProcessPendingActions(Sts2RuntimeReflectionReader reader, IBridgeLogger? logger, int tickCount, string source)
     {
         while (true)
         {
             PendingAction? pending;
             ExportedWindow? window;
+            int queueDepth;
             lock (Gate)
             {
                 if (PendingActions.Count == 0)
@@ -184,21 +209,28 @@ internal static class InGameRuntimeCoordinator
 
                 pending = PendingActions.Dequeue();
                 window = _currentWindow;
+                queueDepth = PendingActions.Count;
             }
 
             try
             {
-                var response = ExecutePendingAction(reader, pending.Request, window);
+                pending.Trace.MarkDequeued(tickCount, Environment.CurrentManagedThreadId);
+                logger?.Info($"Dequeued in-game action request_id={pending.Request.RequestId} source={source} queue_depth={queueDepth}");
+                pending.Trace.MarkExecuting(tickCount, Environment.CurrentManagedThreadId);
+                var response = ExecutePendingAction(reader, pending.Request, window, tickCount);
+                response = MergeTraceMetadata(response, pending, tickCount, response.Status);
                 pending.Completion.TrySetResult(response);
             }
             catch (Exception ex)
             {
+                pending.Trace.MarkFailed(tickCount, "action_execution_failed", ex.Message);
                 logger?.Error("Failed to process queued in-game action", ex);
                 pending.Completion.TrySetResult(CreateFailedResponse(
                     pending.Request,
                     pending.Request.ActionId,
                     "action_execution_failed",
-                    ex.Message));
+                    ex.Message,
+                    CreateTraceMetadata(pending)));
             }
         }
     }
@@ -206,7 +238,8 @@ internal static class InGameRuntimeCoordinator
     private static ActionResponse ExecutePendingAction(
         Sts2RuntimeReflectionReader reader,
         ActionRequest request,
-        ExportedWindow? currentWindow)
+        ExportedWindow? currentWindow,
+        int tickCount)
     {
         if (currentWindow is null)
         {
@@ -225,17 +258,18 @@ internal static class InGameRuntimeCoordinator
         }
 
         var result = reader.ExecuteAction(request, action);
-        if (!result.Accepted)
-        {
-            return CreateRejectedResponse(request, action.ActionId, result.ErrorCode ?? "action_rejected", result.Message);
-        }
-
-        var metadata = new Dictionary<string, object?>(result.Metadata)
+        var responseMetadata = new Dictionary<string, object?>(result.Metadata)
         {
             ["phase"] = currentWindow.Snapshot.Phase,
             ["state_version"] = currentWindow.Snapshot.StateVersion,
+            ["tick_count"] = tickCount,
         };
-        return CreateAcceptedResponse(request, action.ActionId, result.Message, metadata);
+        if (!result.Accepted)
+        {
+            return CreateRejectedResponse(request, action.ActionId, result.ErrorCode ?? "action_rejected", result.Message, responseMetadata);
+        }
+
+        return CreateAcceptedResponse(request, action.ActionId, result.Message, responseMetadata);
     }
 
     private static LegalAction? ResolveAction(IEnumerable<LegalAction> actions, ActionRequest request)
@@ -270,7 +304,8 @@ internal static class InGameRuntimeCoordinator
         ActionRequest request,
         string? actionId,
         string errorCode,
-        string message)
+        string message,
+        IReadOnlyDictionary<string, object?>? metadata = null)
     {
         return new ActionResponse(
             RequestId: request.RequestId ?? Guid.NewGuid().ToString("N"),
@@ -279,14 +314,15 @@ internal static class InGameRuntimeCoordinator
             Status: "rejected",
             ErrorCode: errorCode,
             Message: message,
-            Metadata: new Dictionary<string, object?>());
+            Metadata: metadata ?? new Dictionary<string, object?>());
     }
 
     private static ActionResponse CreateFailedResponse(
         ActionRequest request,
         string? actionId,
         string errorCode,
-        string message)
+        string message,
+        IReadOnlyDictionary<string, object?>? metadata = null)
     {
         return new ActionResponse(
             RequestId: request.RequestId ?? Guid.NewGuid().ToString("N"),
@@ -295,7 +331,51 @@ internal static class InGameRuntimeCoordinator
             Status: "failed",
             ErrorCode: errorCode,
             Message: message,
-            Metadata: new Dictionary<string, object?>());
+            Metadata: metadata ?? new Dictionary<string, object?>());
+    }
+
+    private static ActionRequest EnsureRequestId(ActionRequest request)
+    {
+        return string.IsNullOrWhiteSpace(request.RequestId)
+            ? request with { RequestId = Guid.NewGuid().ToString("N") }
+            : request;
+    }
+
+    private static IReadOnlyDictionary<string, object?> CreateTraceMetadata(PendingAction pending)
+    {
+        int lastTickCount;
+        DateTimeOffset? lastTickAt;
+        int pendingQueueCount;
+        bool currentWindowReady;
+        lock (Gate)
+        {
+            lastTickCount = _tickCount;
+            lastTickAt = _lastTickAt;
+            pendingQueueCount = PendingActions.Count;
+            currentWindowReady = _currentWindow is not null;
+        }
+
+        return pending.Trace.ToMetadata(lastTickCount, lastTickAt, pendingQueueCount, currentWindowReady);
+    }
+
+    private static ActionResponse MergeTraceMetadata(ActionResponse response, PendingAction pending, int tickCount, string status)
+    {
+        if (string.Equals(status, "accepted", StringComparison.OrdinalIgnoreCase))
+        {
+            pending.Trace.MarkCompleted(tickCount, "completed", response.Message);
+        }
+        else if (string.Equals(status, "rejected", StringComparison.OrdinalIgnoreCase))
+        {
+            pending.Trace.MarkCompleted(tickCount, "rejected", response.ErrorCode ?? response.Message);
+        }
+
+        var metadata = new Dictionary<string, object?>(response.Metadata);
+        foreach (var pair in CreateTraceMetadata(pending))
+        {
+            metadata[pair.Key] = pair.Value;
+        }
+
+        return response with { Metadata = metadata };
     }
 
     private sealed class PendingAction
@@ -303,10 +383,13 @@ internal static class InGameRuntimeCoordinator
         public PendingAction(ActionRequest request)
         {
             Request = request;
+            Trace = new InGameActionTrace(request.RequestId ?? Guid.NewGuid().ToString("N"));
             Completion = new TaskCompletionSource<ActionResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         public ActionRequest Request { get; }
+
+        public InGameActionTrace Trace { get; }
 
         public TaskCompletionSource<ActionResponse> Completion { get; }
     }

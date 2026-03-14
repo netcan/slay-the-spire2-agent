@@ -157,7 +157,13 @@ def summarize_runtime_log(log_file: Path) -> list[str]:
     return hints
 
 
-def launch_game(game_dir: Path, port: int, enable_writes: bool, wait_seconds: float) -> int:
+def launch_game(
+    game_dir: Path,
+    port: int,
+    enable_writes: bool,
+    wait_seconds: float,
+    show_game_log: bool = False,
+) -> int:
     exe_path = game_dir / "SlayTheSpire2.exe"
     if not exe_path.exists():
         raise FileNotFoundError(f"Game executable does not exist: {exe_path}")
@@ -173,10 +179,22 @@ def launch_game(game_dir: Path, port: int, enable_writes: bool, wait_seconds: fl
     if enable_writes:
         env["STS2_BRIDGE_ENABLE_WRITES"] = "true"
 
+    popen_kwargs: dict[str, object] = {
+        "cwd": game_dir,
+        "env": env,
+    }
+    if not show_game_log:
+        popen_kwargs["stdin"] = subprocess.DEVNULL
+        popen_kwargs["stdout"] = subprocess.DEVNULL
+        popen_kwargs["stderr"] = subprocess.DEVNULL
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if creationflags:
+                popen_kwargs["creationflags"] = creationflags
+
     process = subprocess.Popen(
         [str(exe_path), "--log-file", str(log_file), "--verbose"],
-        cwd=game_dir,
-        env=env,
+        **popen_kwargs,
     )
 
     print(f"Launched Slay the Spire 2 (pid={process.pid})")
@@ -214,7 +232,7 @@ def command_debug(args: argparse.Namespace) -> int:
     output_dir = build_mod(game_dir)
     target_dir = install_mod(game_dir, output_dir)
     print(f"Installed mod to: {target_dir}")
-    launch_game(game_dir, args.port, args.enable_writes, args.wait_seconds)
+    launch_game(game_dir, args.port, args.enable_writes, args.wait_seconds, show_game_log=args.show_game_log)
     return 0
 
 
@@ -232,6 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
     debug_parser.add_argument("--port", type=int, default=17654, help="Bridge port to expose from the in-game mod")
     debug_parser.add_argument("--enable-writes", action="store_true", help="Enable in-game write actions")
     debug_parser.add_argument("--wait-seconds", type=float, default=30.0, help="How long to wait for /health")
+    debug_parser.add_argument("--show-game-log", action="store_true", help="Also mirror the game process stdout/stderr into the current terminal")
     debug_parser.set_defaults(handler=command_debug)
 
     return parser

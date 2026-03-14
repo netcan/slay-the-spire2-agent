@@ -142,6 +142,7 @@ python tools/debug_sts2_mod.py debug --enable-writes
 - `build`：使用真实 STS2 引用重新构建 mod，并生成 `.pck`
 - `install`：把 `.pck`、DLL、manifest 复制到游戏 `mods/Sts2Mod.StateBridge/`
 - `debug`：执行构建 + 安装 + 启动游戏，并轮询 `http://127.0.0.1:17654/health`
+- `debug` 默认只把游戏运行日志写到 `tmp/sts2-debug/` 下的 `sts2-runtime-*.log`，不再刷当前终端；需要镜像到当前终端时可追加 `--show-game-log`
 - 可通过 `--game-dir` 覆盖默认游戏路径，也可设置环境变量 `STS2_GAME_DIR`
 
 ### 真实 live apply 验证
@@ -187,6 +188,15 @@ python tools/validate_live_apply.py \
 - `success`：请求被接受，且观测到 live 状态推进
 - `inconclusive`：请求被接受，但超时窗口内未观测到明确推进
 - `rejected` / `failed`：安全校验、协议或运行时失败
+
+当 `POST /apply` 返回 `failed` 或 `rejected` 时，可优先查看 `apply_response.json` / `result.json` 中的以下诊断字段：
+
+- `queue_stage`：当前动作卡在哪个阶段，例如 `enqueued`、`dequeued`、`executing`、`completed`、`failed`
+- `last_tick_count` / `last_tick_at`：最近一次 in-game tick 是否还在推进
+- `pending_queue_count`：失败时队列里还有多少请求未消费
+- `current_window_ready`：失败时 coordinator 是否持有 live 决策窗口
+
+如果 `queue_stage=enqueued` 且长时间没有进入 `dequeued`，优先排查 in-game tick / pump 是否正常驱动；如果已经进入 `executing`，则更可能是动作反射执行阶段的问题。
 
 ### 真实游戏手工联调
 
