@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from sts2_agent.bridge import BridgeError, GameBridge, InvalidPayloadError, InterruptedSessionError, StaleActionError
 from sts2_agent.models import ActionSubmission, PolicyDecision, RunSummary, TraceEntry, to_dict
@@ -18,6 +19,8 @@ class OrchestratorConfig:
     max_actions_per_turn: int | None = None
     stop_after_player_turn: bool = True
     auto_end_turn_when_only_end_turn: bool = True
+    state_sync_retries: int = 3
+    stale_action_retries: int = 2
     trace_dir: str = "traces"
     dry_run: bool = False
 
@@ -38,10 +41,11 @@ class AutoplayOrchestrator:
         recorder = JsonlTraceRecorder(trace_path)
         decisions = 0
         actions_this_turn = 0
+        stale_action_attempts = 0
 
         for step_index in range(1, self.config.max_steps + 1):
-            snapshot = self.bridge.get_snapshot(session.session_id)
-            legal_actions = self.bridge.get_legal_actions(session.session_id)
+            snapshot, legal_actions = self._read_consistent_state(session.session_id)
+            legal_actions = self._effective_legal_actions(snapshot, legal_actions)
             if snapshot.terminal:
                 return self._finish(
                     session.session_id,
@@ -221,6 +225,7 @@ class AutoplayOrchestrator:
                 decisions += 1
                 if snapshot.phase == "combat":
                     actions_this_turn += 1
+                stale_action_attempts = 0
                 stop_reason = self._post_action_stop_reason(selected_action.type, policy_output, result)
                 self._record(
                     recorder,
@@ -245,7 +250,40 @@ class AutoplayOrchestrator:
                         turn_completed=True,
                         actions_this_turn=actions_this_turn,
                     )
-            except (StaleActionError, InvalidPayloadError, InterruptedSessionError, BridgeError) as exc:
+            except StaleActionError as exc:
+                stale_action_attempts += 1
+                interrupted_payload = {
+                    "status": "interrupted",
+                    "error_code": getattr(exc, "error_code", "stale_action"),
+                    "message": str(exc),
+                    "retrying": stale_action_attempts <= self.config.stale_action_retries,
+                    "stale_action_attempts": stale_action_attempts,
+                }
+                fallback_output = locals().get("policy_output", PolicyDecision(action_id=None, reason="policy unavailable", halt=True))
+                self._record(
+                    recorder,
+                    snapshot,
+                    legal_actions,
+                    fallback_output,
+                    interrupted_payload,
+                    interrupted_payload["retrying"] is False,
+                    step_index,
+                    actions_this_turn,
+                    interrupted_payload["retrying"] is False,
+                    "stale_action" if interrupted_payload["retrying"] is False else "stale_action_retry",
+                )
+                if stale_action_attempts <= self.config.stale_action_retries:
+                    continue
+                return self._finish(
+                    session.session_id,
+                    decisions,
+                    trace_path,
+                    reason=interrupted_payload["error_code"],
+                    completed=False,
+                    interrupted=True,
+                    actions_this_turn=actions_this_turn,
+                )
+            except (InvalidPayloadError, InterruptedSessionError, BridgeError) as exc:
                 interrupted_payload = {"status": "interrupted", "error_code": getattr(exc, "error_code", "bridge_error"), "message": str(exc)}
                 fallback_output = locals().get("policy_output", PolicyDecision(action_id=None, reason="policy unavailable", halt=True))
                 self._record(
@@ -388,6 +426,43 @@ class AutoplayOrchestrator:
         if self.config.stop_after_player_turn and metadata_phase and metadata_phase != "combat":
             return "phase_changed"
         return ""
+
+    def _read_consistent_state(self, session_id: str) -> tuple[Any, list[Any]]:
+        snapshot = self.bridge.get_snapshot(session_id)
+        legal_actions = self.bridge.get_legal_actions(session_id)
+        retries = max(1, self.config.state_sync_retries)
+        for _ in range(retries):
+            confirm_snapshot = self.bridge.get_snapshot(session_id)
+            if (
+                confirm_snapshot.decision_id == snapshot.decision_id
+                and confirm_snapshot.state_version == snapshot.state_version
+            ):
+                return snapshot, legal_actions
+            snapshot = confirm_snapshot
+            legal_actions = self.bridge.get_legal_actions(session_id)
+        return snapshot, legal_actions
+
+    @staticmethod
+    def _effective_legal_actions(snapshot, legal_actions):
+        player = getattr(snapshot, "player", None)
+        if player is None:
+            return legal_actions
+        hand_by_id = {card.card_id: card for card in player.hand}
+        effective_actions = []
+        for action in legal_actions:
+            if action.type != "play_card":
+                effective_actions.append(action)
+                continue
+            card_id = action.params.get("card_id")
+            if not isinstance(card_id, str):
+                effective_actions.append(action)
+                continue
+            card = hand_by_id.get(card_id)
+            if card is None:
+                continue
+            if card.playable and card.cost <= player.energy:
+                effective_actions.append(action)
+        return effective_actions
 
     @staticmethod
     def _build_action_args(action) -> dict[str, object]:

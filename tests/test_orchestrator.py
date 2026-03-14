@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sts2_agent.bridge import BridgeSession, InvalidPayloadError, MockGameBridge
+from sts2_agent.bridge import BridgeSession, InvalidPayloadError, MockGameBridge, StaleActionError
 from sts2_agent.models import (
     ActionResult,
     ActionStatus,
@@ -166,6 +166,45 @@ class SequencedCombatBridge:
 
     def reset(self, session_id: str):
         raise NotImplementedError
+
+
+class SnapshotDriftBridge(SequencedCombatBridge):
+    def __init__(self) -> None:
+        super().__init__(
+            [
+                make_window(actions=[{"type": "play_card", "label": "Strike", "params": {"card_id": "card-1"}}]),
+                make_window(actions=[{"type": "end_turn", "label": "End Turn"}], energy=0, hand=[]),
+                make_window(phase="reward", actions=[]),
+            ]
+        )
+        self._snapshot_reads = 0
+
+    def get_snapshot(self, session_id: str) -> DecisionSnapshot:
+        snapshot = super().get_snapshot(session_id)
+        self._snapshot_reads += 1
+        if self._snapshot_reads == 2:
+            self.index = 1
+            return super().get_snapshot(session_id)
+        return snapshot
+
+
+class RetryableStaleBridge(SequencedCombatBridge):
+    def __init__(self) -> None:
+        super().__init__(
+            [
+                make_window(actions=[{"type": "play_card", "label": "Strike", "params": {"card_id": "card-1"}}]),
+                make_window(actions=[{"type": "end_turn", "label": "End Turn"}], energy=0, hand=[]),
+                make_window(phase="reward", actions=[]),
+            ]
+        )
+        self._stale_raised = False
+
+    def submit_action(self, submission: ActionSubmission) -> ActionResult:
+        if not self._stale_raised:
+            self._stale_raised = True
+            self.index = 1
+            raise StaleActionError("Requested decision_id is no longer current.")
+        return super().submit_action(submission)
 
 
 def make_window(
@@ -391,6 +430,67 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(summary.decisions, 1)
             self.assertEqual(summary.actions_this_turn, 1)
             self.assertEqual(summary.ended_by, "max_actions_per_turn")
+
+    def test_orchestrator_retries_until_snapshot_and_actions_are_consistent(self) -> None:
+        bridge = SnapshotDriftBridge()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator = AutoplayOrchestrator(
+                bridge=bridge,
+                policy=FirstLegalActionPolicy(),
+                config=OrchestratorConfig(trace_dir=tmpdir),
+            )
+            summary = orchestrator.run(scenario="live")
+
+            self.assertTrue(summary.completed)
+            self.assertFalse(summary.interrupted)
+            self.assertEqual(summary.ended_by, "auto_end_turn")
+            self.assertEqual(bridge.submissions, ["end_turn"])
+
+    def test_orchestrator_retries_stale_action_with_fresh_state(self) -> None:
+        bridge = RetryableStaleBridge()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator = AutoplayOrchestrator(
+                bridge=bridge,
+                policy=FirstLegalActionPolicy(),
+                config=OrchestratorConfig(trace_dir=tmpdir, stale_action_retries=1),
+            )
+            summary = orchestrator.run(scenario="live")
+
+            self.assertTrue(summary.completed)
+            self.assertFalse(summary.interrupted)
+            self.assertEqual(summary.ended_by, "auto_end_turn")
+            self.assertEqual(bridge.submissions, ["end_turn"])
+            records = [json.loads(line) for line in Path(summary.trace_path).read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(records[0]["stop_reason"], "stale_action_retry")
+            self.assertFalse(records[0]["is_final_step"])
+
+    def test_orchestrator_filters_unplayable_cards_and_auto_ends_turn(self) -> None:
+        bridge = SequencedCombatBridge(
+            [
+                make_window(
+                    actions=[
+                        {"type": "play_card", "label": "Strike", "params": {"card_id": "card-1"}},
+                        {"type": "play_card", "label": "Defend", "params": {"card_id": "card-2"}},
+                        {"type": "end_turn", "label": "End Turn"},
+                    ],
+                    energy=0,
+                    hand=["card-1", "card-2"],
+                ),
+                make_window(phase="reward", actions=[]),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator = AutoplayOrchestrator(
+                bridge=bridge,
+                policy=FirstLegalActionPolicy(),
+                config=OrchestratorConfig(trace_dir=tmpdir),
+            )
+            summary = orchestrator.run(scenario="live")
+
+            self.assertTrue(summary.completed)
+            self.assertFalse(summary.interrupted)
+            self.assertEqual(summary.ended_by, "auto_end_turn")
+            self.assertEqual(bridge.submissions, ["end_turn"])
 
 
 if __name__ == "__main__":
