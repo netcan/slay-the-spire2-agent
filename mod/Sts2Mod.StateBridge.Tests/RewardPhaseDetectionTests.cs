@@ -81,7 +81,21 @@ public sealed class RewardPhaseDetectionTests
         var currentPoint = new FakeMapPoint("Monster", new FakeMapCoord(1, 1),
             new FakeMapPoint("Elite", new FakeMapCoord(2, 2)));
         var runState = new FakeRunState(
-            new[] { new FakeEnemy("enemy-1", true, intent: "Attack+Weak", intentDamage: 7, intentHits: 2) },
+            new[]
+            {
+                new FakeEnemy("enemy-1", true, intent: "Attack+Weak", intentDamage: 7, intentHits: 2)
+                {
+                    CurrentMove = new FakeEnemyMove("Gnaw")
+                    {
+                        Description = "Deal {Damage:diff()} [gold]damage[/gold]. Gain {Block:diff()} [gold]Block[/gold].",
+                        Damage = 7,
+                        Block = 4,
+                        Keywords = new[] { "damage", "block" },
+                    },
+                    Traits = new[] { "beast" },
+                    Keywords = new[] { "ambush" },
+                },
+            },
             currentMapPoint: currentPoint,
             hand: new[]
             {
@@ -160,6 +174,13 @@ public sealed class RewardPhaseDetectionTests
         Assert.Equal(7, enemy.IntentDamage);
         Assert.Equal(2, enemy.IntentHits);
         Assert.Contains("weak", enemy.IntentEffects ?? Array.Empty<string>());
+        Assert.Equal("Gnaw", enemy.MoveName);
+        Assert.Equal("Deal 7 **damage**. Gain 4 **Block**.", enemy.MoveDescription);
+        Assert.Contains(enemy.MoveGlossary ?? Array.Empty<GlossaryAnchor>(), anchor => anchor.GlossaryId == "damage");
+        Assert.Contains(enemy.MoveGlossary ?? Array.Empty<GlossaryAnchor>(), anchor => anchor.GlossaryId == "block");
+        Assert.Contains("beast", enemy.Traits ?? Array.Empty<string>());
+        Assert.Contains("damage", enemy.Keywords ?? Array.Empty<string>());
+        Assert.Contains("vulnerable", enemy.Keywords ?? Array.Empty<string>());
         Assert.Contains("Vulnerable", enemy.Powers?.Select(power => power.Name) ?? Array.Empty<string>());
 
         var runStateSnapshot = exported.Snapshot.RunState;
@@ -179,6 +200,30 @@ public sealed class RewardPhaseDetectionTests
         Assert.Equal(1, discardPileExport["expected_count"]);
         Assert.Equal(1, discardPileExport["exported_count"]);
         Assert.Equal(false, discardPileExport["degraded"]);
+        var enemyExport = Assert.IsAssignableFrom<IReadOnlyDictionary<string, object?>>(exported.Snapshot.Metadata["enemy_export"]);
+        Assert.Equal(false, enemyExport["degraded"]);
+    }
+
+    [Fact]
+    public void BuildCombatWindow_KeepsEnemyBaseStateWhenMoveDescriptionIsMissing()
+    {
+        var reader = CreateReader();
+        var runNode = new FakeRunNode(new FakeScreenTracker());
+        var runState = new FakeRunState(
+            new[] { new FakeEnemy("enemy-1", true, intent: "Attack", intentDamage: 6) });
+
+        var window = InvokeBuildCombatWindow(reader, runNode, runState);
+        var exported = new CombatWindowExtractor().Export(window, new BridgeSessionState(new BridgeOptions()));
+        var enemy = Assert.Single(exported.Snapshot.Enemies);
+
+        Assert.Equal("Louse", enemy.Name);
+        Assert.Equal(6, enemy.IntentDamage);
+        Assert.Equal("Attack", enemy.MoveName);
+        Assert.Null(enemy.MoveDescription);
+        Assert.Empty(enemy.MoveGlossary ?? Array.Empty<GlossaryAnchor>());
+        var enemyExport = Assert.IsAssignableFrom<IReadOnlyDictionary<string, object?>>(exported.Snapshot.Metadata["enemy_export"]);
+        Assert.Equal(true, enemyExport["degraded"]);
+        Assert.True((int)enemyExport["entry_count"] >= 1);
     }
 
     [Fact]
@@ -793,6 +838,19 @@ public sealed class RewardPhaseDetectionTests
         public int IntentHits { get; } = intentHits;
         public bool IsAlive { get; } = isAlive;
         public List<FakePower> Powers { get; } = new() { new FakePower("vulnerable", "Vulnerable", 1, "Receive more attack damage.") };
+        public FakeEnemyMove? CurrentMove { get; init; }
+        public IReadOnlyList<string> Traits { get; init; } = Array.Empty<string>();
+        public IReadOnlyList<string> Keywords { get; init; } = Array.Empty<string>();
+    }
+
+    private sealed class FakeEnemyMove(string name)
+    {
+        public string Name { get; } = name;
+        public string Description { get; init; } = string.Empty;
+        public string? RenderedDescription { get; init; }
+        public int? Damage { get; init; }
+        public int? Block { get; init; }
+        public IReadOnlyList<string> Keywords { get; init; } = Array.Empty<string>();
     }
 
     private sealed class FakePlayerCombatState(

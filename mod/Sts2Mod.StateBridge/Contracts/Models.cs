@@ -103,7 +103,12 @@ public sealed record EnemyState(
     int? IntentHits = null,
     int? IntentBlock = null,
     IReadOnlyList<string>? IntentEffects = null,
-    IReadOnlyList<PowerView>? Powers = null);
+    IReadOnlyList<PowerView>? Powers = null,
+    string? MoveName = null,
+    string? MoveDescription = null,
+    IReadOnlyList<GlossaryAnchor>? MoveGlossary = null,
+    IReadOnlyList<string>? Traits = null,
+    IReadOnlyList<string>? Keywords = null);
 
 public sealed record LegalAction(
     string ActionId,

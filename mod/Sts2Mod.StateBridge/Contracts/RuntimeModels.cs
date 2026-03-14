@@ -73,7 +73,12 @@ public sealed record RuntimeEnemyState(
     int? IntentHits = null,
     int? IntentBlock = null,
     IReadOnlyList<string>? IntentEffects = null,
-    IReadOnlyList<RuntimePowerState>? Powers = null);
+    IReadOnlyList<RuntimePowerState>? Powers = null,
+    string? MoveName = null,
+    string? MoveDescription = null,
+    IReadOnlyList<GlossaryAnchor>? MoveGlossary = null,
+    IReadOnlyList<string>? Traits = null,
+    IReadOnlyList<string>? Keywords = null);
 
 public sealed record RuntimeActionDefinition(
     string Type,

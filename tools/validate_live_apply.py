@@ -236,6 +236,8 @@ def summarize_snapshot_schema(snapshot: dict[str, Any]) -> dict[str, Any]:
     player = snapshot.get("player")
     hand = player.get("hand") if isinstance(player, dict) else []
     hand = hand if isinstance(hand, list) else []
+    enemies = snapshot.get("enemies")
+    enemies = enemies if isinstance(enemies, list) else []
     pile_fields = {
         "hand": hand,
         "draw_pile_cards": player.get("draw_pile_cards") if isinstance(player, dict) else [],
@@ -245,6 +247,11 @@ def summarize_snapshot_schema(snapshot: dict[str, Any]) -> dict[str, Any]:
     cards_with_description = 0
     cards_with_glossary = 0
     cards_without_description_diagnostics = 0
+    enemies_with_move_name = 0
+    enemies_with_move_description = 0
+    enemies_with_move_glossary = 0
+    enemies_with_traits = 0
+    enemies_with_keywords = 0
     pile_counts: dict[str, int] = {}
     for pile_name, pile_cards in pile_fields.items():
         pile_cards = pile_cards if isinstance(pile_cards, list) else []
@@ -258,8 +265,27 @@ def summarize_snapshot_schema(snapshot: dict[str, Any]) -> dict[str, Any]:
                 cards_with_glossary += 1
             if all(key not in card for key in ("description_quality", "description_source", "description_vars")):
                 cards_without_description_diagnostics += 1
+    for enemy in enemies:
+        if not isinstance(enemy, dict):
+            continue
+        if enemy.get("move_name"):
+            enemies_with_move_name += 1
+        if enemy.get("move_description"):
+            enemies_with_move_description += 1
+        if isinstance(enemy.get("move_glossary"), list) and enemy.get("move_glossary"):
+            enemies_with_move_glossary += 1
+        if isinstance(enemy.get("traits"), list) and enemy.get("traits"):
+            enemies_with_traits += 1
+        if isinstance(enemy.get("keywords"), list) and enemy.get("keywords"):
+            enemies_with_keywords += 1
     return {
         "hand_count": len(hand),
+        "enemy_count": len(enemies),
+        "enemies_with_move_name": enemies_with_move_name,
+        "enemies_with_move_description": enemies_with_move_description,
+        "enemies_with_move_glossary": enemies_with_move_glossary,
+        "enemies_with_traits": enemies_with_traits,
+        "enemies_with_keywords": enemies_with_keywords,
         "draw_pile_count": int(player.get("draw_pile") or 0) if isinstance(player, dict) else 0,
         "discard_pile_count": int(player.get("discard_pile") or 0) if isinstance(player, dict) else 0,
         "exhaust_pile_count": int(player.get("exhaust_pile") or 0) if isinstance(player, dict) else 0,

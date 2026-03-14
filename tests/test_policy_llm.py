@@ -133,6 +133,14 @@ def build_snapshot() -> DecisionSnapshot:
                 intent_type="attack",
                 intent_damage=11,
                 intent_hits=1,
+                move_name="撕咬",
+                move_description="造成11点**伤害**并获得6点**格挡**。",
+                move_glossary=[
+                    GlossaryAnchor(glossary_id="damage", display_text="伤害", hint="会降低目标生命值。", source="description_text"),
+                    GlossaryAnchor(glossary_id="block", display_text="格挡", hint="在下个回合前，阻挡伤害。", source="description_text"),
+                ],
+                traits=["beast"],
+                keywords=["damage", "block", "strength", "beast"],
                 powers=[
                     PowerView(
                         power_id="strength",
@@ -332,6 +340,9 @@ class ChatCompletionsPolicyTests(unittest.TestCase):
         self.assertEqual(payload["player"]["exhaust_pile_cards"], [])
         self.assertEqual(payload["player"]["powers"][0]["amount"], 3)
         self.assertEqual(payload["enemies"][0]["intent_damage"], 11)
+        self.assertEqual(payload["enemies"][0]["move_name"], "撕咬")
+        self.assertEqual(payload["enemies"][0]["move_glossary"][0]["id"], "damage")
+        self.assertIn("beast", payload["enemies"][0]["traits"])
         self.assertEqual(payload["enemies"][0]["powers"][0]["name"], "力量")
         self.assertEqual(payload["run_state"]["map"]["current_coord"], "1,2")
 

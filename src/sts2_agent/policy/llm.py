@@ -346,6 +346,11 @@ class ChatCompletionsPolicy:
             "intent_hits": enemy.intent_hits,
             "intent_block": enemy.intent_block,
             "intent_effects": list(enemy.intent_effects),
+            "move_name": enemy.move_name,
+            "move_description": ChatCompletionsPolicy._preferred_description_text(enemy),
+            "move_glossary": ChatCompletionsPolicy._summarize_glossary(getattr(enemy, "move_glossary", [])),
+            "traits": list(enemy.traits),
+            "keywords": list(enemy.keywords),
         }
         for key, value in optional_values.items():
             if value not in (None, [], ""):
@@ -382,6 +387,9 @@ class ChatCompletionsPolicy:
 
     @staticmethod
     def _preferred_description_text(item: Any) -> str | None:
+        move_description = getattr(item, "move_description", None)
+        if isinstance(move_description, str) and move_description:
+            return move_description
         description = getattr(item, "description", None)
         if isinstance(description, str) and description:
             return description

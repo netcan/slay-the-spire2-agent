@@ -141,6 +141,11 @@ public abstract class WindowExtractorBase : IWindowExtractor
                 enemy.IntentHits,
                 enemy.IntentBlock,
                 IntentEffects = enemy.IntentEffects?.ToArray() ?? Array.Empty<string>(),
+                enemy.MoveName,
+                enemy.MoveDescription,
+                MoveGlossary = enemy.MoveGlossary?.ToArray() ?? Array.Empty<GlossaryAnchor>(),
+                Traits = enemy.Traits?.ToArray() ?? Array.Empty<string>(),
+                Keywords = enemy.Keywords?.ToArray() ?? Array.Empty<string>(),
                 Powers = enemy.Powers?.Select(power => new
                 {
                     power.PowerId,
@@ -260,7 +265,12 @@ public abstract class WindowExtractorBase : IWindowExtractor
             enemy.IntentHits,
             enemy.IntentBlock,
             enemy.IntentEffects?.ToArray() ?? Array.Empty<string>(),
-            Convert(enemy.Powers));
+            Convert(enemy.Powers),
+            enemy.MoveName,
+            enemy.MoveDescription,
+            enemy.MoveGlossary?.ToArray() ?? Array.Empty<GlossaryAnchor>(),
+            enemy.Traits?.ToArray() ?? Array.Empty<string>(),
+            enemy.Keywords?.ToArray() ?? Array.Empty<string>());
     }
 
     protected static CardView Convert(RuntimeCard card)

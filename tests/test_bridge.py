@@ -37,6 +37,10 @@ class MockBridgeTests(unittest.TestCase):
         self.assertEqual(snapshot.player.exhaust_pile, len(snapshot.player.exhaust_pile_cards))
         self.assertTrue(snapshot.player.draw_pile_cards[0].description)
         self.assertTrue(snapshot.player.discard_pile_cards[0].glossary)
+        self.assertEqual(snapshot.enemies[0].move_name, "Chomp")
+        self.assertEqual(snapshot.enemies[0].move_glossary[0].glossary_id, "damage")
+        self.assertIn("beast", snapshot.enemies[0].traits)
+        self.assertIn("strength", snapshot.enemies[0].keywords)
 
     def test_bridge_rejects_stale_action_without_state_mutation(self) -> None:
         snapshot = self.bridge.get_snapshot(self.session.session_id)
@@ -353,6 +357,14 @@ class HttpBridgeTests(unittest.TestCase):
                     "intent_damage": 11,
                     "intent_hits": 1,
                     "intent_effects": ["weak"],
+                    "move_name": "Thrash",
+                    "move_description": "Deal 11 **damage** and gain 6 **Block**.",
+                    "move_glossary": [
+                        {"glossary_id": "damage", "display_text": "Damage", "hint": "Reduces HP.", "source": "description_text"},
+                        {"glossary_id": "block", "display_text": "Block", "hint": "Prevents damage until next turn.", "source": "description_text"}
+                    ],
+                    "traits": ["beast"],
+                    "keywords": ["damage", "block", "weak", "strength", "beast"],
                     "powers": [
                         {
                             "power_id": "strength",
@@ -398,6 +410,10 @@ class HttpBridgeTests(unittest.TestCase):
         self.assertEqual(snapshot.enemies[0].intent_type, "attack")
         self.assertEqual(snapshot.enemies[0].powers[0].canonical_power_id, "strength")
         self.assertEqual(snapshot.enemies[0].powers[0].glossary[0].glossary_id, "strength")
+        self.assertEqual(snapshot.enemies[0].move_name, "Thrash")
+        self.assertEqual(snapshot.enemies[0].move_glossary[1].glossary_id, "block")
+        self.assertEqual(snapshot.enemies[0].traits, ["beast"])
+        self.assertIn("strength", snapshot.enemies[0].keywords)
         self.assertEqual(snapshot.run_state.act, 1)
         self.assertEqual(snapshot.run_state.map.reachable_nodes, ["monster@1,3", "elite@2,3"])
 
@@ -421,6 +437,10 @@ class HttpBridgeTests(unittest.TestCase):
         self.assertEqual(snapshot.player.powers, [])
         self.assertEqual(snapshot.enemies[0].intent_damage, None)
         self.assertEqual(snapshot.enemies[0].powers, [])
+        self.assertIsNone(snapshot.enemies[0].move_name)
+        self.assertEqual(snapshot.enemies[0].move_glossary, [])
+        self.assertEqual(snapshot.enemies[0].traits, [])
+        self.assertEqual(snapshot.enemies[0].keywords, [])
         self.assertEqual(snapshot.player.hand, [])
         self.assertEqual(snapshot.player.draw_pile_cards, [])
         self.assertEqual(snapshot.player.discard_pile_cards, [])

@@ -123,6 +123,11 @@ class EnemyState:
     intent_block: int | None = None
     intent_effects: list[str] = field(default_factory=list)
     powers: list[PowerView] = field(default_factory=list)
+    move_name: str | None = None
+    move_description: str | None = None
+    move_glossary: list[GlossaryAnchor] = field(default_factory=list)
+    traits: list[str] = field(default_factory=list)
+    keywords: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

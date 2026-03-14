@@ -195,6 +195,9 @@ internal sealed class Sts2RuntimeReflectionReader
             ["energy"] = new("energy", "能量", "用于打出卡牌。", new[] { "能量", "energy" }),
             ["exhaust"] = new("exhaust", "消耗", "本场战斗中移出该牌。", new[] { "消耗", "exhaust" }),
             ["discard"] = new("discard", "弃牌", "将手牌移入弃牌堆。", new[] { "弃", "discard" }),
+            ["status"] = new("status", "状态", "战斗中加入或产生的负面牌。", new[] { "状态", "status" }),
+            ["debuff"] = new("debuff", "负面效果", "会削弱目标。", new[] { "负面效果", "debuff" }),
+            ["buff"] = new("buff", "增益", "会强化目标。", new[] { "增益", "buff" }),
             ["metallicize"] = new("metallicize", "金属化", "回合结束时获得格挡。", new[] { "金属化", "metallicize" }),
         };
     private readonly BridgeOptions _options;
@@ -1194,12 +1197,20 @@ internal sealed class Sts2RuntimeReflectionReader
         var textDiagnostics = new TextDiagnosticsCollector();
         var playerBuild = BuildPlayerState(runState, textDiagnostics);
         var player = playerBuild.Player;
-        var enemies = BuildEnemies(runState, textDiagnostics);
+        var enemyBuild = BuildEnemies(runState, textDiagnostics);
+        var enemies = enemyBuild.Enemies;
         var metadata = CreateBaseMetadata(runNode, runState, DecisionPhase.Combat);
         foreach (var pair in playerBuild.Diagnostics)
         {
             metadata[pair.Key] = pair.Value;
         }
+        metadata["enemy_export"] = new Dictionary<string, object?>
+        {
+            ["enemy_count"] = enemies.Count,
+            ["degraded"] = enemyBuild.Diagnostics.Count > 0,
+            ["entry_count"] = enemyBuild.Diagnostics.Count,
+            ["entries"] = enemyBuild.Diagnostics.Take(12).ToArray(),
+        };
         var runStateSnapshot = BuildRunState(runState, textDiagnostics);
         var rewardAnalysis = AnalyzeRewardPhase(runNode, runState);
         metadata["phase_detection"] = rewardAnalysis.ToMetadata();
@@ -1616,37 +1627,171 @@ internal sealed class Sts2RuntimeReflectionReader
         }
     }
 
-    private IReadOnlyList<RuntimeEnemyState> BuildEnemies(object runState, TextDiagnosticsCollector textDiagnostics)
+    private EnemyBuildResult BuildEnemies(object runState, TextDiagnosticsCollector textDiagnostics)
     {
         var combatState = GetCombatState(runState);
         if (combatState is null)
         {
-            return Array.Empty<RuntimeEnemyState>();
+            return new EnemyBuildResult(Array.Empty<RuntimeEnemyState>(), Array.Empty<IReadOnlyDictionary<string, object?>>());
         }
 
-        return EnumerateObjects(GetMemberValue(combatState, "Enemies"))
-            .Select((enemy, index) =>
+        var playerTargets = BuildCreatureTargetCollection(runState);
+        var enemies = new List<RuntimeEnemyState>();
+        var diagnostics = new List<IReadOnlyDictionary<string, object?>>();
+        foreach (var (enemy, index) in EnumerateObjects(GetMemberValue(combatState, "Enemies")).Select((enemy, index) => (enemy, index)))
+        {
+            try
             {
-                var intent = ResolveEnemyIntent(enemy, $"enemies[{index}].intent", textDiagnostics);
-                return new RuntimeEnemyState(
-                    EnemyId: ResolveEnemyId(enemy, index),
-                    Name: ConvertToText(GetMemberValue(enemy, "Name"), $"enemies[{index}].name", textDiagnostics) ?? $"enemy_{index}",
-                    Hp: GetNullableInt(enemy, "CurrentHp") ?? 0,
-                    MaxHp: GetNullableInt(enemy, "MaxHp") ?? 0,
-                    Block: GetNullableInt(enemy, "Block") ?? 0,
-                    Intent: intent.Display,
-                    IsAlive: GetBoolean(enemy, "IsAlive", defaultValue: true),
-                    InstanceEnemyId: ResolveEnemyId(enemy, index),
-                    CanonicalEnemyId: ResolveEnemyCanonicalId(enemy),
-                    IntentRaw: intent.Raw,
-                    IntentType: intent.Type,
-                    IntentDamage: intent.Damage,
-                    IntentHits: intent.Hits,
-                    IntentBlock: intent.Block,
-                    IntentEffects: intent.Effects,
-                    Powers: ExtractPowers(GetMemberValue(enemy, "Monster") ?? enemy, $"enemies[{index}].powers", textDiagnostics));
-            })
-            .ToArray();
+                enemies.Add(BuildEnemyState(enemy, index, playerTargets, textDiagnostics, diagnostics));
+            }
+            catch (Exception ex)
+            {
+                var enemyId = ResolveEnemyId(enemy, index);
+                diagnostics.Add(CreateEnemyExportDiagnostic(
+                    index,
+                    enemyId,
+                    "enemy",
+                    "exception",
+                    ex.GetBaseException().Message));
+                _logger?.Warn($"Enemy extraction degraded for enemies[{index}] ({enemyId}): {ex.GetBaseException().Message}");
+                enemies.Add(BuildFallbackEnemyState(enemy, index, playerTargets, textDiagnostics));
+            }
+        }
+
+        return new EnemyBuildResult(enemies.ToArray(), diagnostics.ToArray());
+    }
+
+    private RuntimeEnemyState BuildEnemyState(
+        object enemy,
+        int index,
+        object? playerTargets,
+        TextDiagnosticsCollector textDiagnostics,
+        List<IReadOnlyDictionary<string, object?>> diagnostics)
+    {
+        var path = $"enemies[{index}]";
+        var enemyId = ResolveEnemyId(enemy, index);
+        var monster = GetMemberValue(enemy, "Monster");
+        var intent = ResolveEnemyIntent(enemy, playerTargets, $"{path}.intent", textDiagnostics);
+        var powers = ExtractPowers(monster ?? enemy, $"{path}.powers", textDiagnostics);
+        var enrichment = DescribeEnemyEnrichment(enemy, enemyId, index, playerTargets, intent, powers, textDiagnostics, diagnostics);
+        return new RuntimeEnemyState(
+            EnemyId: enemyId,
+            Name: ConvertToText(GetMemberValue(enemy, "Name"), $"{path}.name", textDiagnostics) ?? $"enemy_{index}",
+            Hp: GetNullableInt(enemy, "CurrentHp") ?? 0,
+            MaxHp: GetNullableInt(enemy, "MaxHp") ?? 0,
+            Block: GetNullableInt(enemy, "Block") ?? 0,
+            Intent: intent.Display,
+            IsAlive: GetBoolean(enemy, "IsAlive", defaultValue: true),
+            InstanceEnemyId: enemyId,
+            CanonicalEnemyId: ResolveEnemyCanonicalId(enemy),
+            IntentRaw: intent.Raw,
+            IntentType: intent.Type,
+            IntentDamage: intent.Damage,
+            IntentHits: intent.Hits,
+            IntentBlock: intent.Block,
+            IntentEffects: intent.Effects,
+            Powers: powers,
+            MoveName: enrichment.MoveName,
+            MoveDescription: enrichment.MoveDescription,
+            MoveGlossary: enrichment.MoveGlossary,
+            Traits: enrichment.Traits,
+            Keywords: enrichment.Keywords);
+    }
+
+    private RuntimeEnemyState BuildFallbackEnemyState(object enemy, int index, object? playerTargets, TextDiagnosticsCollector textDiagnostics)
+    {
+        var path = $"enemies[{index}]";
+        var enemyId = ResolveEnemyId(enemy, index);
+        var intent = ResolveEnemyIntent(enemy, playerTargets, $"{path}.intent", textDiagnostics);
+        return new RuntimeEnemyState(
+            EnemyId: enemyId,
+            Name: ConvertToText(GetMemberValue(enemy, "Name"), $"{path}.name", textDiagnostics) ?? $"enemy_{index}",
+            Hp: GetNullableInt(enemy, "CurrentHp") ?? 0,
+            MaxHp: GetNullableInt(enemy, "MaxHp") ?? 0,
+            Block: GetNullableInt(enemy, "Block") ?? 0,
+            Intent: intent.Display,
+            IsAlive: GetBoolean(enemy, "IsAlive", defaultValue: true),
+            InstanceEnemyId: enemyId,
+            CanonicalEnemyId: ResolveEnemyCanonicalId(enemy),
+            IntentRaw: intent.Raw,
+            IntentType: intent.Type,
+            IntentDamage: intent.Damage,
+            IntentHits: intent.Hits,
+            IntentBlock: intent.Block,
+            IntentEffects: intent.Effects,
+            Powers: ExtractPowers(GetMemberValue(enemy, "Monster") ?? enemy, $"{path}.powers", textDiagnostics),
+            MoveGlossary: Array.Empty<GlossaryAnchor>(),
+            Traits: Array.Empty<string>(),
+            Keywords: Array.Empty<string>());
+    }
+
+    private EnemyEnrichmentDescriptor DescribeEnemyEnrichment(
+        object enemy,
+        string enemyId,
+        int index,
+        object? playerTargets,
+        EnemyIntentDescriptor intent,
+        IReadOnlyList<RuntimePowerState> powers,
+        TextDiagnosticsCollector textDiagnostics,
+        List<IReadOnlyDictionary<string, object?>> diagnostics)
+    {
+        var path = $"enemies[{index}]";
+        var monster = GetMemberValue(enemy, "Monster");
+        var moveSource = ResolveEnemyMoveSource(enemy);
+
+        T SafeRead<T>(string field, Func<T> read, T fallback)
+        {
+            try
+            {
+                return read();
+            }
+            catch (Exception ex)
+            {
+                diagnostics.Add(CreateEnemyExportDiagnostic(
+                    index,
+                    enemyId,
+                    field,
+                    "exception",
+                    ex.GetBaseException().Message));
+                _logger?.Warn($"Enemy enrich field degraded for {path}.{field}: {ex.GetBaseException().Message}");
+                return fallback;
+            }
+        }
+
+        var moveName = SafeRead(
+            "move_name",
+            () => ResolveEnemyMoveName(enemy, moveSource, playerTargets, intent, path, textDiagnostics),
+            fallback: null as string);
+        var traits = SafeRead(
+            "traits",
+            () => ExtractEnemyTraits(enemy, monster, moveSource, $"{path}.traits", textDiagnostics),
+            fallback: Array.Empty<string>());
+        var placeholderKeywords = Array.Empty<string>();
+        var moveDescription = SafeRead(
+            "move_description",
+            () => ResolveEnemyMoveDescription(enemy, moveSource, playerTargets, path, textDiagnostics, moveName, traits, placeholderKeywords),
+            fallback: new DescriptionExtraction(null, null, null, null, null, Array.Empty<DescriptionVariable>(), Array.Empty<GlossaryAnchor>()));
+        var keywords = SafeRead(
+            "keywords",
+            () => ExtractEnemyKeywords(intent, moveDescription.Glossary, traits, powers, enemy, monster, moveSource, $"{path}.keywords", textDiagnostics),
+            fallback: Array.Empty<string>());
+
+        if (string.IsNullOrWhiteSpace(moveName) && !string.Equals(intent.Display, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            diagnostics.Add(CreateEnemyExportDiagnostic(index, enemyId, "move_name", "not_found", "no readable move name found", "unresolved"));
+        }
+
+        if (string.IsNullOrWhiteSpace(moveDescription.Description) && !string.Equals(intent.Display, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            diagnostics.Add(CreateEnemyExportDiagnostic(index, enemyId, "move_description", "not_found", "no readable move description found", "unresolved"));
+        }
+
+        return new EnemyEnrichmentDescriptor(
+            moveName,
+            moveDescription.Description,
+            moveDescription.Glossary,
+            traits,
+            keywords);
     }
 
     private IReadOnlyList<HandCardDescriptor> GetHandCardDescriptors(object runState, TextDiagnosticsCollector textDiagnostics)
@@ -1990,7 +2135,7 @@ internal sealed class Sts2RuntimeReflectionReader
         var hasRewardScreen = rewardScreen is not null;
         var rewardScreenComplete = hasRewardScreen && GetBoolean(rewardScreen, "IsComplete");
         var rewardScreenVisible = hasRewardScreen && IsRewardScreenVisible(runNode, rewardScreen!);
-        var hasLiveEnemies = BuildEnemies(runState, new TextDiagnosticsCollector()).Any(enemy => enemy.IsAlive);
+        var hasLiveEnemies = BuildEnemies(runState, new TextDiagnosticsCollector()).Enemies.Any(enemy => enemy.IsAlive);
         var cardRewardSelectionDetected = GetCardRewardSelectionScreen(runNode, rewardScreen) is not null;
         var rewardAdvanceDetected = hasRewardScreen &&
                                     rewardButtons.Length == 0 &&
@@ -2860,7 +3005,7 @@ internal sealed class Sts2RuntimeReflectionReader
             ?? GetMemberValue(power, "CanonicalId"));
     }
 
-    private static EnemyIntentDescriptor ResolveEnemyIntent(object enemy, string path, TextDiagnosticsCollector textDiagnostics)
+    private static EnemyIntentDescriptor ResolveEnemyIntent(object enemy, object? playerTargets, string path, TextDiagnosticsCollector textDiagnostics)
     {
         var raw = ConvertToText(
             GetMemberValue(enemy, "Intent")
@@ -2868,23 +3013,529 @@ internal sealed class Sts2RuntimeReflectionReader
             path,
             textDiagnostics,
             "Intent");
-        var type = NormalizeIntentType(raw, enemy);
+        var intentObject = ResolvePrimaryEnemyIntentObject(enemy);
+        var owner = ResolveEnemyOwnerCreature(enemy);
+        var hoverTip = intentObject is not null && owner is not null
+            ? TryInvokeCompatibleMethod(intentObject, "GetHoverTip", playerTargets, owner)
+            : null;
+        raw ??= ConvertToText(
+            intentObject is not null && owner is not null
+                ? TryInvokeCompatibleMethod(intentObject, "GetIntentLabel", playerTargets, owner)
+                : null,
+            $"{path}.label",
+            textDiagnostics,
+            "Title",
+            "Text",
+            "Label");
+        var hoverTipTitle = ConvertToText(GetMemberValue(hoverTip, "Title"), $"{path}.hover_tip_title", textDiagnostics, "Title");
+        if (IsLowQualityIntentLabel(raw) && !string.IsNullOrWhiteSpace(hoverTipTitle))
+        {
+            raw = hoverTipTitle;
+        }
+        else
+        {
+            raw ??= hoverTipTitle;
+        }
+
+        var intentTypeText = ConvertToText(GetMemberValue(intentObject, "IntentType"));
+        var type = NormalizeIntentType(raw ?? intentTypeText, enemy);
+        var hoverDescription = ConvertToText(GetMemberValue(hoverTip, "Description"), $"{path}.hover_tip_description", textDiagnostics, "Description", "Text");
+        var damage = GetNullableInt(enemy, "IntentDamage")
+                     ?? GetNullableInt(enemy, "DisplayedIntentDamage")
+                     ?? GetNullableInt(enemy, "AttackDamage")
+                     ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentDamage")
+                     ?? GetNullableInt(intentObject, "Damage")
+                     ?? ConvertToInt32(TryInvokeCompatibleMethod(intentObject, "GetTotalDamage", playerTargets, owner))
+                     ?? ConvertToInt32(TryInvokeCompatibleMethod(intentObject, "GetSingleDamage", playerTargets, owner));
+        var hits = GetNullableInt(enemy, "IntentHits")
+                   ?? GetNullableInt(enemy, "AttackCount")
+                   ?? GetNullableInt(enemy, "HitCount")
+                   ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentHits")
+                   ?? GetNullableInt(intentObject, "Repeats");
+        var block = GetNullableInt(enemy, "IntentBlock")
+                    ?? GetNullableInt(enemy, "BlockAmount")
+                    ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentBlock");
+        var display = raw ?? type ?? "unknown";
+        if ((string.IsNullOrWhiteSpace(raw) || string.Equals(display, "unknown", StringComparison.OrdinalIgnoreCase)) &&
+            !string.IsNullOrWhiteSpace(type) &&
+            damage is not null)
+        {
+            display = hits is > 1
+                ? $"{type}_{damage}x{hits}"
+                : $"{type}_{damage}";
+        }
+
         return new EnemyIntentDescriptor(
-            Display: raw ?? "unknown",
+            Display: display,
             Raw: raw,
             Type: type,
-            Damage: GetNullableInt(enemy, "IntentDamage")
-                    ?? GetNullableInt(enemy, "DisplayedIntentDamage")
-                    ?? GetNullableInt(enemy, "AttackDamage")
-                    ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentDamage"),
-            Hits: GetNullableInt(enemy, "IntentHits")
-                  ?? GetNullableInt(enemy, "AttackCount")
-                  ?? GetNullableInt(enemy, "HitCount")
-                  ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentHits"),
-            Block: GetNullableInt(enemy, "IntentBlock")
-                   ?? GetNullableInt(enemy, "BlockAmount")
-                   ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentBlock"),
-            Effects: ExtractIntentEffects(enemy, raw));
+            Damage: damage,
+            Hits: hits,
+            Block: block,
+            Effects: ExtractIntentEffects(enemy, raw ?? hoverDescription));
+    }
+
+    private string? ResolveEnemyMoveName(
+        object enemy,
+        object? moveSource,
+        object? playerTargets,
+        EnemyIntentDescriptor intent,
+        string path,
+        TextDiagnosticsCollector textDiagnostics)
+    {
+        var intentObject = ResolvePrimaryEnemyIntentObject(enemy);
+        var owner = ResolveEnemyOwnerCreature(enemy);
+        var hoverTip = intentObject is not null && owner is not null
+            ? TryInvokeCompatibleMethod(intentObject, "GetHoverTip", playerTargets, owner)
+            : null;
+        var moveName = ConvertToText(
+            GetFirstMemberValue(
+                moveSource,
+                "Name",
+                "Title",
+                "DisplayName",
+                "Label",
+                "IntentName",
+                "MoveName"),
+            $"{path}.move_name",
+            textDiagnostics,
+            "Name",
+            "Title",
+            "DisplayName",
+            "Label");
+        if (!string.IsNullOrWhiteSpace(moveName))
+        {
+            return moveName;
+        }
+
+        moveName = ConvertToText(
+            intentObject is not null && owner is not null
+                ? TryInvokeCompatibleMethod(intentObject, "GetIntentLabel", playerTargets, owner)
+                : null,
+            $"{path}.move_name_intent_label",
+            textDiagnostics,
+            "Title",
+            "Text",
+            "Label");
+        if (!string.IsNullOrWhiteSpace(moveName))
+        {
+            var hoverTitle = ConvertToText(GetMemberValue(hoverTip, "Title"), $"{path}.move_name_hover_tip", textDiagnostics, "Title");
+            if (IsLowQualityIntentLabel(moveName) && !string.IsNullOrWhiteSpace(hoverTitle))
+            {
+                return hoverTitle;
+            }
+
+            return moveName;
+        }
+
+        moveName = ConvertToText(GetMemberValue(hoverTip, "Title"), $"{path}.move_name_hover_tip", textDiagnostics, "Title");
+        if (!string.IsNullOrWhiteSpace(moveName))
+        {
+            return moveName;
+        }
+
+        moveName = ConvertToText(
+            GetFirstMemberValue(
+                enemy,
+                "IntentName",
+                "MoveName",
+                "ActionName",
+                "CurrentMoveName",
+                "NextMoveName"),
+            $"{path}.move_name_fallback",
+            textDiagnostics,
+            "IntentName",
+            "MoveName",
+            "ActionName");
+        if (!string.IsNullOrWhiteSpace(moveName))
+        {
+            return moveName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(intent.Raw) &&
+            !string.Equals(intent.Raw, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            return intent.Raw;
+        }
+
+        return !string.IsNullOrWhiteSpace(intent.Display) &&
+               !string.Equals(intent.Display, "unknown", StringComparison.OrdinalIgnoreCase)
+            ? intent.Display
+            : null;
+    }
+
+    private DescriptionExtraction ResolveEnemyMoveDescription(
+        object enemy,
+        object? moveSource,
+        object? playerTargets,
+        string path,
+        TextDiagnosticsCollector textDiagnostics,
+        string? moveName,
+        IReadOnlyList<string> traits,
+        IReadOnlyList<string> keywords)
+    {
+        var monster = GetMemberValue(enemy, "Monster");
+        var source = moveSource ?? enemy;
+        var intentObject = ResolvePrimaryEnemyIntentObject(enemy);
+        var owner = ResolveEnemyOwnerCreature(enemy);
+        var hoverTip = intentObject is not null && owner is not null
+            ? TryInvokeCompatibleMethod(intentObject, "GetHoverTip", playerTargets, owner)
+            : null;
+        var rawDescriptionValue =
+            GetFirstMemberValue(
+                moveSource,
+                "Description",
+                "RulesText",
+                "Text",
+                "TooltipText",
+                "IntentDescription",
+                "IntentText",
+                "EffectText",
+                "DescriptionTemplate",
+                "LocString")
+            ?? GetFirstMemberValue(
+                enemy,
+                "IntentDescription",
+                "IntentText",
+                "IntentTooltip",
+                "IntentTooltipText",
+                "MoveDescription",
+                "CurrentMoveDescription")
+            ?? GetFirstMemberValue(
+                monster,
+                "IntentDescription",
+                "IntentText",
+                "MoveDescription")
+            ?? GetMemberValue(hoverTip, "Description")
+            ?? (intentObject is not null && owner is not null
+                ? TryInvokeCompatibleMethod(intentObject, "GetIntentDescription", playerTargets, owner)
+                : null);
+        var renderedDescriptionValue =
+            GetFirstMemberValue(
+                moveSource,
+                "RenderedDescription",
+                "RenderedText",
+                "DisplayDescription",
+                "DescriptionRendered",
+                "Tooltip",
+                "TooltipText")
+            ?? GetFirstMemberValue(
+                enemy,
+                "RenderedIntentDescription",
+                "IntentDescriptionRendered",
+                "MoveDescriptionRendered")
+            ?? GetFirstMemberValue(
+                monster,
+                "RenderedIntentDescription",
+                "MoveDescriptionRendered")
+            ?? GetMemberValue(hoverTip, "Description");
+
+        var raw = ConvertDescriptionTemplateToText(
+            rawDescriptionValue,
+            $"{path}.move_description",
+            textDiagnostics,
+            "Description",
+            "RulesText",
+            "Text",
+            "TooltipText",
+            "IntentDescription",
+            "IntentText");
+        var rendered = ConvertToText(
+            renderedDescriptionValue,
+            $"{path}.move_description_rendered",
+            textDiagnostics,
+            "RenderedDescription",
+            "RenderedText",
+            "DisplayDescription",
+            "DescriptionRendered");
+
+        var vars = ExtractDescriptionVariables(
+            source,
+            raw,
+            ResolveEnemyMoveDescriptionSeedVariables(moveSource, enemy, raw, traits, keywords));
+        var renderOutcome = RenderDescription(raw, rendered, vars);
+        var glossary = ExtractGlossaryAnchors(
+            canonicalId: null,
+            displayName: moveName,
+            texts: new[] { renderOutcome.Text, raw, moveName },
+            keywords: keywords,
+            traits: traits);
+        var canonicalDescription = ChooseCanonicalDescription(renderOutcome.Text, raw);
+
+        if (!string.IsNullOrWhiteSpace(raw) || !string.IsNullOrWhiteSpace(rendered))
+        {
+            LogDescriptionDiagnostics(
+                kind: "enemy_move",
+                identifier: ResolveEnemyCanonicalId(enemy) ?? moveName ?? path,
+                path: $"{path}.move_description",
+                raw: raw,
+                rendered: renderOutcome.Text,
+                quality: renderOutcome.Quality,
+                source: renderOutcome.Source,
+                variables: vars,
+                glossary: glossary);
+        }
+
+        return new DescriptionExtraction(raw, renderOutcome.Text, canonicalDescription, renderOutcome.Quality, renderOutcome.Source, vars, glossary);
+    }
+
+    private static IReadOnlyList<DescriptionVariable> ResolveEnemyMoveDescriptionSeedVariables(
+        object? moveSource,
+        object enemy,
+        string? raw,
+        IReadOnlyList<string> traits,
+        IReadOnlyList<string> keywords)
+    {
+        var seedHints = (keywords ?? Array.Empty<string>())
+            .Concat(traits ?? Array.Empty<string>())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToArray();
+        var variables = new List<DescriptionVariable>();
+        foreach (var key in new[] { "damage", "block", "draw", "strength", "weak", "vulnerable", "frail", "amount" })
+        {
+            if (!ShouldSeedDescriptionVariable(key, raw, seedHints))
+            {
+                continue;
+            }
+
+            if (moveSource is not null)
+            {
+                AddSeedVariable(variables, key, moveSource, "enemy_move_seed", null);
+            }
+
+            AddSeedVariable(variables, key, enemy, "enemy_seed", null);
+        }
+
+        return DeduplicateVariables(variables);
+    }
+
+    private IReadOnlyList<string> ExtractEnemyTraits(
+        object enemy,
+        object? monster,
+        object? moveSource,
+        string path,
+        TextDiagnosticsCollector textDiagnostics)
+    {
+        return ExtractCombinedTextList(
+            new object?[]
+            {
+                GetFirstMemberValue(enemy, "Traits", "Tags", "EnemyTags", "TraitIds", "TypeTags"),
+                GetFirstMemberValue(monster, "Traits", "Tags", "EnemyTags", "TraitIds", "TypeTags"),
+                GetFirstMemberValue(moveSource, "Traits", "Tags", "EnemyTags"),
+            },
+            path,
+            textDiagnostics);
+    }
+
+    private IReadOnlyList<string> ExtractEnemyKeywords(
+        EnemyIntentDescriptor intent,
+        IReadOnlyList<GlossaryAnchor> moveGlossary,
+        IReadOnlyList<string> traits,
+        IReadOnlyList<RuntimePowerState> powers,
+        object enemy,
+        object? monster,
+        object? moveSource,
+        string path,
+        TextDiagnosticsCollector textDiagnostics)
+    {
+        var keywords = new List<string>();
+        keywords.AddRange(ExtractCombinedTextList(
+            new object?[]
+            {
+                GetFirstMemberValue(enemy, "Keywords", "KeywordIds", "IntentKeywords"),
+                GetFirstMemberValue(monster, "Keywords", "KeywordIds", "IntentKeywords"),
+                GetFirstMemberValue(moveSource, "Keywords", "KeywordIds", "IntentKeywords"),
+            },
+            path,
+            textDiagnostics));
+        keywords.AddRange(intent.Effects ?? Array.Empty<string>());
+        keywords.AddRange(moveGlossary.Select(anchor => anchor.GlossaryId));
+        keywords.AddRange(traits.Select(trait => NormalizeGlossaryId(trait) ?? trait));
+        keywords.AddRange(
+            powers.Select(power => !string.IsNullOrWhiteSpace(power.CanonicalPowerId)
+                ? power.CanonicalPowerId!
+                : power.PowerId));
+        return keywords
+            .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static object? ResolveEnemyMoveSource(object enemy)
+    {
+        var monster = GetMemberValue(enemy, "Monster");
+        var candidates = new[]
+        {
+            GetFirstMemberValue(enemy, "CurrentMove", "Move", "MoveData", "IntentData", "PlannedMove", "SelectedMove", "CurrentAction", "CurrentIntent", "NextMove"),
+            GetFirstMemberValue(monster, "CurrentMove", "Move", "MoveData", "IntentData", "PlannedMove", "SelectedMove", "CurrentAction", "CurrentIntent", "NextMove"),
+            GetMemberValue(enemy, "Intent"),
+            GetMemberValue(monster, "Intent"),
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (candidate is null || candidate is string || candidate.GetType().IsValueType)
+            {
+                continue;
+            }
+
+            return candidate;
+        }
+
+        return null;
+    }
+
+    private static object? ResolvePrimaryEnemyIntentObject(object enemy)
+    {
+        var moveSource = ResolveEnemyMoveSource(enemy);
+        var directIntent = EnumerateObjects(GetMemberValue(moveSource, "Intents")).FirstOrDefault();
+        if (directIntent is not null)
+        {
+            return directIntent;
+        }
+
+        var monster = GetMemberValue(enemy, "Monster");
+        return EnumerateObjects(GetMemberValue(GetMemberValue(monster, "NextMove"), "Intents")).FirstOrDefault();
+    }
+
+    private static object? ResolveEnemyOwnerCreature(object enemy)
+    {
+        return GetMemberValue(enemy, "Creature")
+               ?? GetMemberValue(GetMemberValue(enemy, "Monster"), "Creature");
+    }
+
+    private object? BuildCreatureTargetCollection(object runState)
+    {
+        var creatures = GetPlayers(runState)
+            .Select(player => GetMemberValue(player, "Creature"))
+            .Where(creature => creature is not null)
+            .Cast<object>()
+            .ToArray();
+        if (creatures.Length == 0)
+        {
+            return null;
+        }
+
+        var elementType = creatures[0].GetType();
+        var typedArray = Array.CreateInstance(elementType, creatures.Length);
+        for (var index = 0; index < creatures.Length; index += 1)
+        {
+            typedArray.SetValue(creatures[index], index);
+        }
+
+        return typedArray;
+    }
+
+    private static IReadOnlyDictionary<string, object?> CreateEnemyExportDiagnostic(
+        int index,
+        string enemyId,
+        string field,
+        string source,
+        string detail,
+        string status = "fallback")
+    {
+        return new Dictionary<string, object?>
+        {
+            ["enemy_index"] = index,
+            ["enemy_id"] = enemyId,
+            ["field"] = field,
+            ["status"] = status,
+            ["source"] = source,
+            ["detail"] = detail,
+        };
+    }
+
+    private static object? GetFirstMemberValue(object? target, params string[] memberNames)
+    {
+        foreach (var memberName in memberNames)
+        {
+            var value = GetMemberValue(target, memberName);
+            if (value is not null)
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<string> ExtractCombinedTextList(
+        IEnumerable<object?> collections,
+        string path,
+        TextDiagnosticsCollector textDiagnostics)
+    {
+        var results = new List<string>();
+        var index = 0;
+        foreach (var collection in collections)
+        {
+            results.AddRange(ExtractTextList(collection, $"{path}[{index}]", textDiagnostics));
+            index += 1;
+        }
+
+        return results
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static object? TryInvokeCompatibleMethod(object? target, string methodName, params object?[] args)
+    {
+        if (target is null)
+        {
+            return null;
+        }
+
+        var methods = target.GetType()
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .Where(method => string.Equals(method.Name, methodName, StringComparison.Ordinal))
+            .ToArray();
+        foreach (var method in methods)
+        {
+            if (method.GetParameters().Length != args.Length)
+            {
+                continue;
+            }
+
+            try
+            {
+                return method.Invoke(target, args);
+            }
+            catch
+            {
+                // Continue probing other overloads.
+            }
+        }
+
+        return null;
+    }
+
+    private static int? ConvertToInt32(object? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return Convert.ToInt32(value);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsLowQualityIntentLabel(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        var trimmed = value.Trim();
+        return trimmed.All(char.IsDigit) ||
+               trimmed.StartsWith("FORMAT_", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<string> BuildTargetConstraints(string? targetType, IReadOnlyList<string> liveEnemyIds)
@@ -4009,6 +4660,15 @@ internal sealed class Sts2RuntimeReflectionReader
         string? Description,
         IReadOnlyList<GlossaryAnchor> Glossary,
         bool? Upgraded,
+        IReadOnlyList<string> Traits,
+        IReadOnlyList<string> Keywords);
+    private readonly record struct EnemyBuildResult(
+        IReadOnlyList<RuntimeEnemyState> Enemies,
+        IReadOnlyList<IReadOnlyDictionary<string, object?>> Diagnostics);
+    private readonly record struct EnemyEnrichmentDescriptor(
+        string? MoveName,
+        string? MoveDescription,
+        IReadOnlyList<GlossaryAnchor> MoveGlossary,
         IReadOnlyList<string> Traits,
         IReadOnlyList<string> Keywords);
     private readonly record struct EnemyIntentDescriptor(

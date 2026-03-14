@@ -249,6 +249,11 @@ class MockGameBridge(GameBridge):
             intent_block=MockGameBridge._optional_int(raw.get("intent_block")),
             intent_effects=list(raw.get("intent_effects") or []),
             powers=[MockGameBridge._build_power(power) for power in raw.get("powers", []) if isinstance(power, dict)],
+            move_name=MockGameBridge._optional_str(raw.get("move_name")),
+            move_description=MockGameBridge._optional_str(raw.get("move_description")),
+            move_glossary=MockGameBridge._build_glossary(raw.get("move_glossary")),
+            traits=list(raw.get("traits") or []),
+            keywords=list(raw.get("keywords") or []),
         )
 
     @staticmethod

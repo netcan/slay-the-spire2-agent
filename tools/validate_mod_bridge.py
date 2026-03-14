@@ -118,8 +118,14 @@ def main() -> int:
         assert combat_snapshot["player"]["powers"][0]["name"]
         assert "description_vars" not in combat_snapshot["player"]["powers"][0]
         assert combat_snapshot["enemies"][0]["intent_type"]
+        assert combat_snapshot["enemies"][0]["move_name"]
+        assert combat_snapshot["enemies"][0]["move_description"]
+        assert combat_snapshot["enemies"][0]["move_glossary"]
+        assert combat_snapshot["enemies"][0]["traits"]
+        assert combat_snapshot["enemies"][0]["keywords"]
         assert combat_snapshot["enemies"][0]["powers"][0]["name"]
         assert combat_snapshot["enemies"][0]["powers"][0]["glossary"]
+        assert "degraded" in combat_snapshot["metadata"]["enemy_export"]
         assert combat_snapshot["run_state"]["act"] == 1
         assert combat_snapshot["run_state"]["map"]["reachable_nodes"]
         combat_actions = fetch(base_url, "/actions?phase=combat")

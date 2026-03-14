@@ -334,6 +334,24 @@
           ],
           "canonical_power_id": "strength"
         }
+      ],
+      "move_name": "Chomp",
+      "move_description": "Deal 11 **damage**.",
+      "move_glossary": [
+        {
+          "glossary_id": "damage",
+          "display_text": "Damage",
+          "hint": "Reduces HP.",
+          "source": "description_text"
+        }
+      ],
+      "traits": [
+        "beast"
+      ],
+      "keywords": [
+        "damage",
+        "strength",
+        "beast"
       ]
     }
   ],
@@ -342,7 +360,13 @@
   "terminal": false,
   "metadata": {
     "room_type": "combat",
-    "turn": 1
+    "turn": 1,
+    "enemy_export": {
+      "enemy_count": 1,
+      "degraded": false,
+      "entry_count": 0,
+      "entries": []
+    }
   },
   "run_state": {
     "act": 1,

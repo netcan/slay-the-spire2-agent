@@ -292,6 +292,11 @@ class HttpGameBridge(GameBridge):
                 for item in payload.get("powers", [])
                 if isinstance(item, dict)
             ],
+            move_name=HttpGameBridge._as_optional_str(payload.get("move_name")),
+            move_description=HttpGameBridge._as_optional_str(payload.get("move_description")),
+            move_glossary=HttpGameBridge._decode_glossary(payload.get("move_glossary")),
+            traits=list(payload.get("traits") or []),
+            keywords=list(payload.get("keywords") or []),
         )
 
     @staticmethod

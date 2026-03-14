@@ -320,12 +320,31 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                                 "Increases attack damage.",
                                 "strength",
                                 Glossary: new[] { new GlossaryAnchor("strength", "Strength", "Increases attack damage.", "canonical_id") }),
-                        }),
+                        },
+                        MoveName: "Chomp",
+                        MoveDescription: "Deal 11 **damage**.",
+                        MoveGlossary: new[]
+                        {
+                            new GlossaryAnchor("damage", "Damage", "Reduces HP.", "description_text"),
+                        },
+                        Traits: new[] { "beast" },
+                        Keywords: new[] { "damage", "strength", "beast" }),
                 },
                 Array.Empty<string>(),
                 Array.Empty<string>(),
                 Terminal: false,
-                Metadata: new Dictionary<string, object?> { ["room_type"] = "combat", ["turn"] = 1 },
+                Metadata: new Dictionary<string, object?>
+                {
+                    ["room_type"] = "combat",
+                    ["turn"] = 1,
+                    ["enemy_export"] = new Dictionary<string, object?>
+                    {
+                        ["enemy_count"] = 1,
+                        ["degraded"] = false,
+                        ["entry_count"] = 0,
+                        ["entries"] = Array.Empty<object>(),
+                    },
+                },
                 Actions: new[]
                 {
                     new RuntimeActionDefinition("play_card", "Play Strike", new Dictionary<string, object?> { ["card_id"] = "strike_red#0" }, new[] { "jaw_worm_1" }),
