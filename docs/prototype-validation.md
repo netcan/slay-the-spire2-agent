@@ -104,3 +104,37 @@ python tools/validate_mod_bridge.py
   - 执行后：`decision_id = "dec-7da0488f"`、`state_version = 12`、敌人 `hp = 38`、玩家 `energy = 0`、`痛击` 已离开手牌
 - 对应 trace：`tmp/llm-autoplay/20260314-live2/sess-0d1e57b5.jsonl`
 - 额外诊断：首次尝试 `tmp/llm-autoplay/20260314-live1/sess-0d1e57b5.jsonl` 因未补 `target_id` 返回 `play_rejected`；随后在 orchestrator 提交阶段自动补齐唯一目标后，真实自动出牌成功。
+
+### 2026-03-14（回合结束修复与完整玩家回合多步 autoplay）
+
+- `end_turn` live 修复验证：
+  - 直接对 `action_id = "act-3fcd451b"` 调用 `/apply`
+  - 返回：
+    - `status = "accepted"`
+    - `message = "Ended the current turn."`
+    - `runtime_handler = "PlayerCmd.EndTurn"`
+  - 之后 polling 观察到：
+    - `decision_id`: `dec-915007da -> dec-ff6a0e91`
+    - `state_version`: `7 -> 9`
+    - 随后继续推进到下一玩家回合：`round_number = 2`、`current_side = "Player"`
+  - 对应 artifacts：`tmp/end-turn-validate/20260314-091705`
+- 完整玩家回合多步 autoplay：
+  - 执行命令：`python tools/run_llm_autoplay.py --bridge-base-url "http://127.0.0.1:17654" --base-url "http://127.0.0.1:8080/v1" --model "Qwen3.5-9B-Q5_K_M.gguf" --trace-dir "tmp/llm-autoplay/20260314-091747-post-endturn-fix" --max-steps 12 --max-actions-per-turn 12`
+  - `RunSummary`：
+    - `completed = true`
+    - `interrupted = false`
+    - `decisions = 4`
+    - `actions_this_turn = 4`
+    - `ended_by = "auto_end_turn"`
+  - 真实动作序列：
+    - 第 1 手：`打击`
+    - 第 2 手：`打击`
+    - 第 3 手：`打击`
+    - 第 4 手：自动 `end_turn`
+  - 结果：
+    - 敌人血量：`46 -> 28`
+    - 回合结束后已进入下一玩家回合：`round_number = 3`
+  - 对应 trace：`tmp/llm-autoplay/20260314-091747-post-endturn-fix/sess-384c418e.jsonl`
+- 联调结论：
+  - `PlayerCmd.EndTurn(...)` 已修复此前 `end_turn` accepted 但状态不推进的问题
+  - 多步 runner 在真实战斗中已能跨多次 `stale_action` 竞争态恢复，并完成“玩家回合内连续出牌 -> 自动结束回合”的闭环

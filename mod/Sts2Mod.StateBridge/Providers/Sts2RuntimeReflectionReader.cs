@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Reflection;
+using System.Threading.Tasks;
 using Sts2Mod.StateBridge.Configuration;
 using Sts2Mod.StateBridge.Contracts;
 
@@ -99,7 +100,7 @@ internal sealed class Sts2RuntimeReflectionReader
         return action.Type switch
         {
             "play_card" => ExecutePlayCard(root.RunState, request, action),
-            "end_turn" => ExecuteEndTurn(request),
+            "end_turn" => ExecuteEndTurn(root.RunState, request),
             "choose_reward" => ExecuteChooseReward(root.RunNode, request, action),
             "skip_reward" => ExecuteSkipReward(root.RunNode, request),
             "choose_map_node" => ExecuteChooseMapNode(request, action),
@@ -767,20 +768,25 @@ internal sealed class Sts2RuntimeReflectionReader
         });
     }
 
-    private RuntimeActionResult ExecuteEndTurn(ActionRequest request)
+    private RuntimeActionResult ExecuteEndTurn(object runState, ActionRequest request)
     {
-        var managerType = FindSts2Assembly()?.GetType("MegaCrit.Sts2.Core.Combat.CombatManager");
-        var manager = GetMemberValue(managerType, "Instance");
-        var method = manager?.GetType().GetMethod("OnEndedTurnLocally", BindingFlags.Public | BindingFlags.Instance);
-        if (method is null || manager is null)
+        var assembly = FindSts2Assembly();
+        var playerCommandType = assembly?.GetType("MegaCrit.Sts2.Core.Commands.PlayerCmd");
+        var method = playerCommandType?.GetMethod(
+            "EndTurn",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        var player = GetPlayers(runState).FirstOrDefault();
+        if (method is null || player is null)
         {
-            return new RuntimeActionResult(false, "CombatManager.OnEndedTurnLocally is not available.", "runtime_incompatible");
+            return new RuntimeActionResult(false, "PlayerCmd.EndTurn is not available.", "runtime_incompatible");
         }
 
-        method.Invoke(manager, null);
+        var callback = new Func<Task>(() => Task.CompletedTask);
+        method.Invoke(null, new object?[] { player, false, callback });
         return new RuntimeActionResult(true, "Ended the current turn.", metadata: new Dictionary<string, object?>
         {
             ["action_type"] = "end_turn",
+            ["runtime_handler"] = "PlayerCmd.EndTurn",
         });
     }
 
