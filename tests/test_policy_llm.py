@@ -5,7 +5,18 @@ import unittest
 from unittest.mock import patch
 from urllib.error import URLError
 
-from sts2_agent.models import CardView, DecisionSnapshot, EnemyState, LegalAction, PlayerState, PowerView, RunMapState, RunState
+from sts2_agent.models import (
+    CardView,
+    DecisionSnapshot,
+    DescriptionVariable,
+    EnemyState,
+    GlossaryAnchor,
+    LegalAction,
+    PlayerState,
+    PowerView,
+    RunMapState,
+    RunState,
+)
 from sts2_agent.policy import (
     ChatCompletionsConfig,
     ChatCompletionsParseError,
@@ -49,6 +60,10 @@ def build_snapshot() -> DecisionSnapshot:
                     playable=True,
                     canonical_card_id="defend_red",
                     description="获得 5 点格挡。",
+                    description_raw="获得{Block:diff()}点[gold]格挡[/gold]。",
+                    description_rendered="获得5点格挡。",
+                    description_vars=[DescriptionVariable(key="block", value=5, source="description_placeholder", placeholder="Block")],
+                    glossary=[GlossaryAnchor(glossary_id="block", display_text="格挡", hint="在下个回合前，阻挡伤害。", source="description_text")],
                     cost_for_turn=1,
                     upgraded=False,
                     target_type="Self",
@@ -60,7 +75,18 @@ def build_snapshot() -> DecisionSnapshot:
             ],
             relics=["燃烧之血"],
             potions=[],
-            powers=[PowerView(power_id="metallicize", name="金属化", amount=3, description="回合结束时获得 3 点格挡。")],
+            powers=[
+                PowerView(
+                    power_id="metallicize",
+                    name="金属化",
+                    amount=3,
+                    description="回合结束时获得 3 点格挡。",
+                    description_raw="回合结束时获得 {Amount} 点[gold]格挡[/gold]。",
+                    description_rendered="回合结束时获得 3 点格挡。",
+                    description_vars=[DescriptionVariable(key="amount", value=3, source="member_alias", placeholder="Amount")],
+                    glossary=[GlossaryAnchor(glossary_id="block", display_text="格挡", hint="在下个回合前，阻挡伤害。", source="description_text")],
+                )
+            ],
         ),
         enemies=[
             EnemyState(
@@ -75,7 +101,17 @@ def build_snapshot() -> DecisionSnapshot:
                 intent_type="attack",
                 intent_damage=11,
                 intent_hits=1,
-                powers=[PowerView(power_id="strength", name="力量", amount=3, description="增加攻击伤害。")],
+                powers=[
+                    PowerView(
+                        power_id="strength",
+                        name="力量",
+                        amount=3,
+                        description="增加攻击伤害。",
+                        description_rendered="增加攻击伤害。",
+                        description_vars=[DescriptionVariable(key="strength", value=3, source="power_id")],
+                        glossary=[GlossaryAnchor(glossary_id="strength", display_text="力量", hint="使攻击造成更多伤害。", source="canonical_id")],
+                    )
+                ],
             )
         ],
         terminal=False,
@@ -259,8 +295,12 @@ class ChatCompletionsPolicyTests(unittest.TestCase):
     def test_summarize_snapshot_includes_rich_runtime_fields(self) -> None:
         payload = self.policy._summarize_snapshot(build_snapshot())
 
-        self.assertEqual(payload["player"]["hand"][0]["description"], "获得 5 点格挡。")
+        self.assertEqual(payload["player"]["hand"][0]["description"], "获得5点格挡。")
+        self.assertEqual(payload["player"]["hand"][0]["description_rendered"], "获得5点格挡。")
+        self.assertEqual(payload["player"]["hand"][0]["description_vars"]["block"], 5)
+        self.assertEqual(payload["player"]["hand"][0]["glossary"][0]["id"], "block")
         self.assertEqual(payload["player"]["powers"][0]["amount"], 3)
+        self.assertEqual(payload["player"]["powers"][0]["description_vars"]["amount"], 3)
         self.assertEqual(payload["enemies"][0]["intent_damage"], 11)
         self.assertEqual(payload["enemies"][0]["powers"][0]["name"], "力量")
         self.assertEqual(payload["run_state"]["map"]["current_coord"], "1,2")

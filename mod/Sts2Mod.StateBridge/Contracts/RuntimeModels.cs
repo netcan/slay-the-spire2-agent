@@ -5,7 +5,11 @@ public sealed record RuntimePowerState(
     string Name,
     int? Amount = null,
     string? Description = null,
-    string? CanonicalPowerId = null);
+    string? CanonicalPowerId = null,
+    string? DescriptionRaw = null,
+    string? DescriptionRendered = null,
+    IReadOnlyList<DescriptionVariable>? DescriptionVars = null,
+    IReadOnlyList<GlossaryAnchor>? Glossary = null);
 
 public sealed record RuntimeRunMapState(
     string? CurrentCoord = null,
@@ -36,7 +40,11 @@ public sealed record RuntimeCard(
     string? CardType = null,
     string? Rarity = null,
     IReadOnlyList<string>? Traits = null,
-    IReadOnlyList<string>? Keywords = null);
+    IReadOnlyList<string>? Keywords = null,
+    string? DescriptionRaw = null,
+    string? DescriptionRendered = null,
+    IReadOnlyList<DescriptionVariable>? DescriptionVars = null,
+    IReadOnlyList<GlossaryAnchor>? Glossary = null);
 
 public sealed record RuntimePlayerState(
     int Hp,

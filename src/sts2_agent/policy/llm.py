@@ -289,9 +289,14 @@ class ChatCompletionsPolicy:
             "cost": card.cost,
             "playable": card.playable,
         }
+        preferred_description = ChatCompletionsPolicy._preferred_description_text(card)
         optional_values = {
             "canonical_card_id": card.canonical_card_id,
-            "description": card.description,
+            "description": preferred_description,
+            "description_rendered": getattr(card, "description_rendered", None),
+            "description_raw": ChatCompletionsPolicy._raw_description_for_summary(card),
+            "description_vars": ChatCompletionsPolicy._summarize_description_vars(getattr(card, "description_vars", [])),
+            "glossary": ChatCompletionsPolicy._summarize_glossary(getattr(card, "glossary", [])),
             "cost_for_turn": card.cost_for_turn,
             "upgraded": card.upgraded,
             "target_type": card.target_type,
@@ -311,10 +316,23 @@ class ChatCompletionsPolicy:
             "power_id": power.power_id,
             "name": power.name,
         }
+        preferred_description = ChatCompletionsPolicy._preferred_description_text(power)
         if power.amount is not None:
             payload["amount"] = power.amount
-        if power.description:
-            payload["description"] = power.description
+        if preferred_description:
+            payload["description"] = preferred_description
+        rendered = getattr(power, "description_rendered", None)
+        if rendered and rendered != preferred_description:
+            payload["description_rendered"] = rendered
+        raw_description = ChatCompletionsPolicy._raw_description_for_summary(power)
+        if raw_description:
+            payload["description_raw"] = raw_description
+        description_vars = ChatCompletionsPolicy._summarize_description_vars(getattr(power, "description_vars", []))
+        if description_vars:
+            payload["description_vars"] = description_vars
+        glossary = ChatCompletionsPolicy._summarize_glossary(getattr(power, "glossary", []))
+        if glossary:
+            payload["glossary"] = glossary
         if power.canonical_power_id:
             payload["canonical_power_id"] = power.canonical_power_id
         return payload
@@ -370,4 +388,60 @@ class ChatCompletionsPolicy:
                 for key, value in map_payload.items()
                 if value not in (None, [], "")
             }
+        return payload
+
+    @staticmethod
+    def _preferred_description_text(item: Any) -> str | None:
+        rendered = getattr(item, "description_rendered", None)
+        if isinstance(rendered, str) and rendered and not ChatCompletionsPolicy._is_template_text(rendered):
+            return rendered
+        description = getattr(item, "description", None)
+        if isinstance(description, str) and description:
+            return description
+        raw = getattr(item, "description_raw", None)
+        if isinstance(raw, str) and raw:
+            return raw
+        return None
+
+    @staticmethod
+    def _raw_description_for_summary(item: Any) -> str | None:
+        raw = getattr(item, "description_raw", None)
+        if not isinstance(raw, str) or not raw:
+            return None
+        preferred = ChatCompletionsPolicy._preferred_description_text(item)
+        return raw if raw != preferred else None
+
+    @staticmethod
+    def _is_template_text(text: str) -> bool:
+        return "{" in text or "}" in text or "[" in text or "]" in text
+
+    @staticmethod
+    def _summarize_description_vars(variables: Any) -> dict[str, int]:
+        if not isinstance(variables, list):
+            return {}
+        payload: dict[str, int] = {}
+        for item in variables:
+            key = getattr(item, "key", None)
+            value = getattr(item, "value", None)
+            if isinstance(key, str) and key and isinstance(value, int):
+                payload[key] = value
+        return payload
+
+    @staticmethod
+    def _summarize_glossary(glossary: Any) -> list[dict[str, str]]:
+        if not isinstance(glossary, list):
+            return []
+        payload: list[dict[str, str]] = []
+        for item in glossary[:4]:
+            glossary_id = getattr(item, "glossary_id", None)
+            display_text = getattr(item, "display_text", None)
+            if not isinstance(glossary_id, str) or not glossary_id:
+                continue
+            if not isinstance(display_text, str) or not display_text:
+                continue
+            entry = {"id": glossary_id, "text": display_text}
+            hint = getattr(item, "hint", None)
+            if isinstance(hint, str) and hint:
+                entry["hint"] = hint
+            payload.append(entry)
         return payload

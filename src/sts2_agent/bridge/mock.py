@@ -21,7 +21,9 @@ from sts2_agent.models import (
     ActionSubmission,
     CardView,
     DecisionSnapshot,
+    DescriptionVariable,
     EnemyState,
+    GlossaryAnchor,
     LegalAction,
     PlayerState,
     PowerView,
@@ -185,6 +187,9 @@ class MockGameBridge(GameBridge):
 
     @staticmethod
     def _build_card(raw: dict[str, Any]) -> CardView:
+        description_raw = MockGameBridge._optional_str(raw.get("description_raw"))
+        description_rendered = MockGameBridge._optional_str(raw.get("description_rendered"))
+        description = MockGameBridge._optional_str(raw.get("description")) or description_rendered or description_raw
         return CardView(
             card_id=str(raw.get("card_id") or ""),
             name=str(raw.get("name") or ""),
@@ -192,7 +197,7 @@ class MockGameBridge(GameBridge):
             playable=bool(raw.get("playable", True)),
             instance_card_id=raw.get("instance_card_id"),
             canonical_card_id=raw.get("canonical_card_id"),
-            description=raw.get("description"),
+            description=description,
             cost_for_turn=MockGameBridge._optional_int(raw.get("cost_for_turn")),
             upgraded=raw.get("upgraded") if isinstance(raw.get("upgraded"), bool) else None,
             target_type=raw.get("target_type"),
@@ -200,16 +205,27 @@ class MockGameBridge(GameBridge):
             rarity=raw.get("rarity"),
             traits=list(raw.get("traits") or []),
             keywords=list(raw.get("keywords") or []),
+            description_raw=description_raw,
+            description_rendered=description_rendered or description,
+            description_vars=MockGameBridge._build_description_vars(raw.get("description_vars")),
+            glossary=MockGameBridge._build_glossary(raw.get("glossary")),
         )
 
     @staticmethod
     def _build_power(raw: dict[str, Any]) -> PowerView:
+        description_raw = MockGameBridge._optional_str(raw.get("description_raw"))
+        description_rendered = MockGameBridge._optional_str(raw.get("description_rendered"))
+        description = MockGameBridge._optional_str(raw.get("description")) or description_rendered or description_raw
         return PowerView(
             power_id=str(raw.get("power_id") or ""),
             name=str(raw.get("name") or ""),
             amount=MockGameBridge._optional_int(raw.get("amount")),
-            description=raw.get("description"),
+            description=description,
             canonical_power_id=raw.get("canonical_power_id"),
+            description_raw=description_raw,
+            description_rendered=description_rendered or description,
+            description_vars=MockGameBridge._build_description_vars(raw.get("description_vars")),
+            glossary=MockGameBridge._build_glossary(raw.get("glossary")),
         )
 
     @staticmethod
@@ -264,3 +280,52 @@ class MockGameBridge(GameBridge):
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _optional_str(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _build_description_vars(raw: Any) -> list[DescriptionVariable]:
+        if not isinstance(raw, list):
+            return []
+        variables: list[DescriptionVariable] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            if not isinstance(key, str) or not key:
+                continue
+            variables.append(
+                DescriptionVariable(
+                    key=key,
+                    value=MockGameBridge._optional_int(item.get("value")),
+                    source=MockGameBridge._optional_str(item.get("source")),
+                    placeholder=MockGameBridge._optional_str(item.get("placeholder")),
+                )
+            )
+        return variables
+
+    @staticmethod
+    def _build_glossary(raw: Any) -> list[GlossaryAnchor]:
+        if not isinstance(raw, list):
+            return []
+        glossary: list[GlossaryAnchor] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            glossary_id = item.get("glossary_id")
+            display_text = item.get("display_text")
+            if not isinstance(glossary_id, str) or not glossary_id:
+                continue
+            if not isinstance(display_text, str) or not display_text:
+                continue
+            glossary.append(
+                GlossaryAnchor(
+                    glossary_id=glossary_id,
+                    display_text=display_text,
+                    hint=MockGameBridge._optional_str(item.get("hint")),
+                    source=MockGameBridge._optional_str(item.get("source")),
+                )
+            )
+        return glossary

@@ -88,7 +88,9 @@ public sealed class RewardPhaseDetectionTests
                 new FakeCard("Strike")
                 {
                     CardId = "strike_red",
-                    Description = "Deal 6 damage.",
+                    Description = "Deal {Damage:diff()} [gold]damage[/gold].",
+                    RenderedDescription = "Deal 6 damage.",
+                    Damage = 6,
                     TargetType = "AnyEnemy",
                     CardType = "Attack",
                     Rarity = "Starter",
@@ -105,9 +107,18 @@ public sealed class RewardPhaseDetectionTests
         var card = Assert.Single(player.Hand);
         Assert.Equal("strike_red", card.CanonicalCardId);
         Assert.Equal("Deal 6 damage.", card.Description);
+        Assert.Equal("Deal {Damage:diff()} [gold]damage[/gold].", card.DescriptionRaw);
+        Assert.Equal("Deal 6 damage.", card.DescriptionRendered);
+        Assert.Equal("damage", Assert.Single(card.DescriptionVars ?? Array.Empty<DescriptionVariable>()).Key);
+        Assert.Contains(card.Glossary ?? Array.Empty<GlossaryAnchor>(), anchor => anchor.GlossaryId == "damage");
         Assert.Equal("AnyEnemy", card.TargetType);
         Assert.Contains("starter", card.Traits ?? Array.Empty<string>());
         Assert.Contains("Metallicize", player.Powers?.Select(power => power.Name) ?? Array.Empty<string>());
+        var playerPower = Assert.Single(player.Powers ?? Array.Empty<PowerView>());
+        Assert.Equal("Gain 3 Block at end of turn.", playerPower.Description);
+        Assert.Equal("amount", Assert.Single(playerPower.DescriptionVars ?? Array.Empty<DescriptionVariable>()).Key);
+        Assert.Contains(playerPower.Glossary ?? Array.Empty<GlossaryAnchor>(), anchor => anchor.GlossaryId == "metallicize");
+        Assert.Contains(playerPower.Glossary ?? Array.Empty<GlossaryAnchor>(), anchor => anchor.GlossaryId == "block");
 
         var enemy = Assert.Single(exported.Snapshot.Enemies);
         Assert.Equal("louse", enemy.CanonicalEnemyId);
@@ -124,6 +135,38 @@ public sealed class RewardPhaseDetectionTests
         Assert.Equal("FakeCombatRoom", runStateSnapshot.CurrentRoomType);
         Assert.Equal("1,1", runStateSnapshot.Map?.CurrentCoord);
         Assert.Contains("Elite@2,2", runStateSnapshot.Map?.ReachableNodes ?? Array.Empty<string>());
+    }
+
+    [Fact]
+    public void BuildCombatWindow_RendersTemplateFallbackAndGlossaryWithoutRuntimeRenderedText()
+    {
+        var reader = CreateReader();
+        var runNode = new FakeRunNode(new FakeScreenTracker());
+        var runState = new FakeRunState(
+            new[] { new FakeEnemy("enemy-1", true) },
+            hand: new[]
+            {
+                new FakeCard("Defend")
+                {
+                    CardId = "defend_red",
+                    Description = "Gain {Block:diff()} [gold]Block[/gold].",
+                    Block = 5,
+                    TargetType = "Self",
+                    CardType = "Skill",
+                    Keywords = new[] { "block" },
+                },
+            });
+
+        var window = InvokeBuildCombatWindow(reader, runNode, runState);
+        var exported = new CombatWindowExtractor().Export(window, new BridgeSessionState(new BridgeOptions()));
+        var player = exported.Snapshot.Player;
+        Assert.NotNull(player);
+        var card = Assert.Single(player.Hand);
+
+        Assert.Equal("Gain 5 Block.", card.DescriptionRendered);
+        Assert.Equal("Gain 5 Block.", card.Description);
+        Assert.Equal("block", Assert.Single(card.DescriptionVars ?? Array.Empty<DescriptionVariable>()).Key);
+        Assert.Contains(card.Glossary ?? Array.Empty<GlossaryAnchor>(), anchor => anchor.GlossaryId == "block");
     }
 
     [Fact]
@@ -451,12 +494,15 @@ public sealed class RewardPhaseDetectionTests
         public string CardId { get; init; } = title.ToLowerInvariant();
         public string Name => Title;
         public string Description { get; init; } = string.Empty;
+        public string? RenderedDescription { get; init; }
         public bool IsUpgraded { get; init; }
         public string TargetType { get; init; } = "AnyEnemy";
         public string CardType { get; init; } = "Attack";
         public string Rarity { get; init; } = "Common";
         public int CanonicalEnergyCost { get; init; } = 1;
         public int CurrentStarCost { get; init; } = 1;
+        public int Damage { get; init; } = 6;
+        public int Block { get; init; } = 5;
         public bool IsPlayable { get; init; } = true;
         public IReadOnlyList<string> Traits { get; init; } = Array.Empty<string>();
         public IReadOnlyList<string> Keywords { get; init; } = Array.Empty<string>();
@@ -590,5 +636,6 @@ public sealed class RewardPhaseDetectionTests
         public string Name { get; } = name;
         public int Amount { get; } = amount;
         public string Description { get; } = description;
+        public string RenderedDescription => description;
     }
 }

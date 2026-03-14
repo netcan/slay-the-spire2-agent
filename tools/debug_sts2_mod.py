@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
 import re
@@ -19,6 +21,7 @@ DEFAULT_GAME_DIRS = [
     Path(r"C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2"),
     Path(r"C:\Program Files\Steam\steamapps\common\Slay the Spire 2"),
 ]
+GAME_PROCESS_NAME = "SlayTheSpire2.exe"
 
 
 def discover_game_dir(explicit: str | None = None) -> Path:
@@ -89,6 +92,56 @@ def resolve_mod_output_dir() -> Path:
     return candidates[0]
 
 
+def list_running_game_processes() -> list[dict[str, str]]:
+    if os.name != "nt":
+        return []
+
+    result = subprocess.run(
+        ["tasklist", "/FI", f"IMAGENAME eq {GAME_PROCESS_NAME}", "/FO", "CSV", "/NH"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+
+    reader = csv.reader(io.StringIO(result.stdout))
+    processes: list[dict[str, str]] = []
+    for row in reader:
+        if len(row) < 2:
+            continue
+        image_name = row[0].strip().strip('"')
+        if not image_name or image_name.upper() == "INFO":
+            continue
+        if image_name.lower() != GAME_PROCESS_NAME.lower():
+            continue
+        processes.append({"image_name": image_name, "pid": row[1].strip().strip('"')})
+    return processes
+
+
+def kill_running_game(timeout_seconds: float = 15.0) -> list[str]:
+    processes = list_running_game_processes()
+    if not processes:
+        return []
+
+    pids = [process["pid"] for process in processes if process.get("pid")]
+    subprocess.run(
+        ["taskkill", "/IM", GAME_PROCESS_NAME, "/T", "/F"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        if not list_running_game_processes():
+            return pids
+        time.sleep(0.5)
+
+    remaining = ", ".join(process["pid"] for process in list_running_game_processes())
+    raise TimeoutError(f"Timed out waiting for {GAME_PROCESS_NAME} to exit. Remaining pids: {remaining}")
+
+
 def build_mod(game_dir: Path) -> Path:
     managed_dir = resolve_managed_dir(game_dir)
     command = [
@@ -102,7 +155,7 @@ def build_mod(game_dir: Path) -> Path:
     return resolve_mod_output_dir()
 
 
-def install_mod(game_dir: Path, source_dir: Path | None = None) -> Path:
+def install_mod(game_dir: Path, source_dir: Path | None = None, kill_game: bool = False) -> Path:
     source_dir = source_dir or resolve_mod_output_dir()
     target_dir = game_dir / "mods" / "Sts2Mod.StateBridge"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -116,8 +169,21 @@ def install_mod(game_dir: Path, source_dir: Path | None = None) -> Path:
         if not required_file.exists():
             raise FileNotFoundError(f"Required mod artifact is missing: {required_file}")
 
-    for required_file in required_files:
-        shutil.copy2(required_file, target_dir / required_file.name)
+    if kill_game:
+        killed_pids = kill_running_game()
+        if killed_pids:
+            print(f"Stopped running Slay the Spire 2 processes: {', '.join(killed_pids)}")
+
+    try:
+        for required_file in required_files:
+            shutil.copy2(required_file, target_dir / required_file.name)
+    except PermissionError as exc:
+        if list_running_game_processes():
+            raise PermissionError(
+                f"Could not overwrite installed mod files because {GAME_PROCESS_NAME} is still running. "
+                f"Retry with --kill-game or close the game first. Target: {target_dir}"
+            ) from exc
+        raise
 
     return target_dir
 
@@ -222,7 +288,7 @@ def command_build(args: argparse.Namespace) -> int:
 
 def command_install(args: argparse.Namespace) -> int:
     game_dir = discover_game_dir(args.game_dir)
-    target_dir = install_mod(game_dir)
+    target_dir = install_mod(game_dir, kill_game=args.kill_game)
     print(f"Installed mod to: {target_dir}")
     return 0
 
@@ -230,7 +296,7 @@ def command_install(args: argparse.Namespace) -> int:
 def command_debug(args: argparse.Namespace) -> int:
     game_dir = discover_game_dir(args.game_dir)
     output_dir = build_mod(game_dir)
-    target_dir = install_mod(game_dir, output_dir)
+    target_dir = install_mod(game_dir, output_dir, kill_game=args.kill_game)
     print(f"Installed mod to: {target_dir}")
     launch_game(game_dir, args.port, args.enable_writes, args.wait_seconds, show_game_log=args.show_game_log)
     return 0
@@ -243,12 +309,15 @@ def build_parser() -> argparse.ArgumentParser:
     for name, handler in (("build", command_build), ("install", command_install)):
         subparser = subparsers.add_parser(name)
         subparser.add_argument("--game-dir", help="Path to the Slay the Spire 2 install directory")
+        if name == "install":
+            subparser.add_argument("--kill-game", action="store_true", help="Kill running Slay the Spire 2 before copying mod files")
         subparser.set_defaults(handler=handler)
 
     debug_parser = subparsers.add_parser("debug")
     debug_parser.add_argument("--game-dir", help="Path to the Slay the Spire 2 install directory")
     debug_parser.add_argument("--port", type=int, default=17654, help="Bridge port to expose from the in-game mod")
     debug_parser.add_argument("--enable-writes", action="store_true", help="Enable in-game write actions")
+    debug_parser.add_argument("--kill-game", action="store_true", help="Kill running Slay the Spire 2 before reinstalling and relaunching")
     debug_parser.add_argument("--wait-seconds", type=float, default=30.0, help="How long to wait for /health")
     debug_parser.add_argument("--show-game-log", action="store_true", help="Also mirror the game process stdout/stderr into the current terminal")
     debug_parser.set_defaults(handler=command_debug)

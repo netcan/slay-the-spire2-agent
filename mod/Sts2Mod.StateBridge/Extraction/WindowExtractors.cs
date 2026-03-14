@@ -53,6 +53,10 @@ public abstract class WindowExtractorBase : IWindowExtractor
                         card.Rarity,
                         Traits = card.Traits?.ToArray() ?? Array.Empty<string>(),
                         Keywords = card.Keywords?.ToArray() ?? Array.Empty<string>(),
+                        card.DescriptionRaw,
+                        card.DescriptionRendered,
+                        DescriptionVars = card.DescriptionVars?.ToArray() ?? Array.Empty<DescriptionVariable>(),
+                        Glossary = card.Glossary?.ToArray() ?? Array.Empty<GlossaryAnchor>(),
                     }).ToArray(),
                     context.Player.DrawPile,
                     context.Player.DiscardPile,
@@ -66,6 +70,10 @@ public abstract class WindowExtractorBase : IWindowExtractor
                         power.Amount,
                         power.Description,
                         power.CanonicalPowerId,
+                        power.DescriptionRaw,
+                        power.DescriptionRendered,
+                        DescriptionVars = power.DescriptionVars?.ToArray() ?? Array.Empty<DescriptionVariable>(),
+                        Glossary = power.Glossary?.ToArray() ?? Array.Empty<GlossaryAnchor>(),
                     }).ToArray() ?? Array.Empty<object>(),
                 },
             Enemies = context.Enemies.Select(enemy => new
@@ -92,6 +100,10 @@ public abstract class WindowExtractorBase : IWindowExtractor
                     power.Amount,
                     power.Description,
                     power.CanonicalPowerId,
+                    power.DescriptionRaw,
+                    power.DescriptionRendered,
+                    DescriptionVars = power.DescriptionVars?.ToArray() ?? Array.Empty<DescriptionVariable>(),
+                    Glossary = power.Glossary?.ToArray() ?? Array.Empty<GlossaryAnchor>(),
                 }).ToArray() ?? Array.Empty<object>(),
             }).ToArray(),
             Rewards = context.Rewards.ToArray(),
@@ -219,7 +231,11 @@ public abstract class WindowExtractorBase : IWindowExtractor
             card.CardType,
             card.Rarity,
             card.Traits?.ToArray() ?? Array.Empty<string>(),
-            card.Keywords?.ToArray() ?? Array.Empty<string>());
+            card.Keywords?.ToArray() ?? Array.Empty<string>(),
+            card.DescriptionRaw,
+            card.DescriptionRendered,
+            card.DescriptionVars?.ToArray() ?? Array.Empty<DescriptionVariable>(),
+            card.Glossary?.ToArray() ?? Array.Empty<GlossaryAnchor>());
     }
 
     protected static IReadOnlyList<PowerView> Convert(IReadOnlyList<RuntimePowerState>? powers)
@@ -229,7 +245,16 @@ public abstract class WindowExtractorBase : IWindowExtractor
 
     protected static PowerView Convert(RuntimePowerState power)
     {
-        return new PowerView(power.PowerId, power.Name, power.Amount, power.Description, power.CanonicalPowerId);
+        return new PowerView(
+            power.PowerId,
+            power.Name,
+            power.Amount,
+            power.Description,
+            power.CanonicalPowerId,
+            power.DescriptionRaw,
+            power.DescriptionRendered,
+            power.DescriptionVars?.ToArray() ?? Array.Empty<DescriptionVariable>(),
+            power.Glossary?.ToArray() ?? Array.Empty<GlossaryAnchor>());
     }
 
     protected static RunState Convert(RuntimeRunState runState)

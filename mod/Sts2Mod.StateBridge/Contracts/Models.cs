@@ -1,5 +1,17 @@
 namespace Sts2Mod.StateBridge.Contracts;
 
+public sealed record DescriptionVariable(
+    string Key,
+    int? Value = null,
+    string? Source = null,
+    string? Placeholder = null);
+
+public sealed record GlossaryAnchor(
+    string GlossaryId,
+    string DisplayText,
+    string? Hint = null,
+    string? Source = null);
+
 public static class DecisionPhase
 {
     public const string Combat = "combat";
@@ -23,7 +35,11 @@ public sealed record PowerView(
     string Name,
     int? Amount = null,
     string? Description = null,
-    string? CanonicalPowerId = null);
+    string? CanonicalPowerId = null,
+    string? DescriptionRaw = null,
+    string? DescriptionRendered = null,
+    IReadOnlyList<DescriptionVariable>? DescriptionVars = null,
+    IReadOnlyList<GlossaryAnchor>? Glossary = null);
 
 public sealed record RunMapState(
     string? CurrentCoord = null,
@@ -54,7 +70,11 @@ public sealed record CardView(
     string? CardType = null,
     string? Rarity = null,
     IReadOnlyList<string>? Traits = null,
-    IReadOnlyList<string>? Keywords = null);
+    IReadOnlyList<string>? Keywords = null,
+    string? DescriptionRaw = null,
+    string? DescriptionRendered = null,
+    IReadOnlyList<DescriptionVariable>? DescriptionVars = null,
+    IReadOnlyList<GlossaryAnchor>? Glossary = null);
 
 public sealed record PlayerState(
     int Hp,

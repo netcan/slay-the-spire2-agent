@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Sts2Mod.StateBridge.Configuration;
 using Sts2Mod.StateBridge.Contracts;
@@ -132,6 +133,39 @@ internal sealed class Sts2RuntimeReflectionReader
         "OnProceedButtonPressed",
         "OnProceedPressed",
     };
+    private static readonly Regex RichTextTagRegex = new(@"\[(?:/?)[^\]]+\]", RegexOptions.Compiled);
+    private static readonly Regex PlaceholderRegex = new(@"\{(?<name>[A-Za-z_][A-Za-z0-9_]*)(?::(?<expr>[^}]+))?\}", RegexOptions.Compiled);
+    private static readonly IReadOnlyDictionary<string, string[]> DescriptionVariableMemberAliases =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["damage"] = new[] { "Damage", "CurrentDamage", "DisplayedDamage", "PreviewDamage", "BaseDamage", "AttackDamage", "DamageAmount" },
+            ["block"] = new[] { "Block", "CurrentBlock", "DisplayedBlock", "PreviewBlock", "BaseBlock", "BlockAmount" },
+            ["draw"] = new[] { "Draw", "DrawAmount", "CardsToDraw", "DrawCount", "CardDraw" },
+            ["strength"] = new[] { "Strength", "StrengthAmount" },
+            ["magic"] = new[] { "MagicNumber", "Magic", "MagicValue", "Value" },
+            ["energy"] = new[] { "Energy", "EnergyGain", "EnergyAmount", "Cost", "CurrentEnergyCost" },
+            ["vulnerable"] = new[] { "Vulnerable", "VulnerableAmount" },
+            ["weak"] = new[] { "Weak", "WeakAmount" },
+            ["frail"] = new[] { "Frail", "FrailAmount" },
+            ["dexterity"] = new[] { "Dexterity", "DexterityAmount" },
+            ["amount"] = new[] { "Amount", "Stacks", "Value" },
+        };
+    private static readonly IReadOnlyDictionary<string, GlossarySpec> KnownGlossarySpecs =
+        new Dictionary<string, GlossarySpec>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["block"] = new("block", "格挡", "在下个回合前，阻挡伤害。", new[] { "格挡", "block" }),
+            ["strength"] = new("strength", "力量", "使攻击造成更多伤害。", new[] { "力量", "strength" }),
+            ["vulnerable"] = new("vulnerable", "易伤", "受到的攻击伤害提高。", new[] { "易伤", "vulnerable" }),
+            ["weak"] = new("weak", "虚弱", "攻击造成的伤害降低。", new[] { "虚弱", "weak" }),
+            ["frail"] = new("frail", "脆弱", "从卡牌获得的格挡减少。", new[] { "脆弱", "frail" }),
+            ["dexterity"] = new("dexterity", "敏捷", "会影响获得的格挡量。", new[] { "敏捷", "dexterity" }),
+            ["damage"] = new("damage", "伤害", "会降低目标生命值。", new[] { "伤害", "damage" }),
+            ["draw"] = new("draw", "抽牌", "将牌堆中的牌加入手牌。", new[] { "抽", "draw" }),
+            ["energy"] = new("energy", "能量", "用于打出卡牌。", new[] { "能量", "energy" }),
+            ["exhaust"] = new("exhaust", "消耗", "本场战斗中移出该牌。", new[] { "消耗", "exhaust" }),
+            ["discard"] = new("discard", "弃牌", "将手牌移入弃牌堆。", new[] { "弃", "discard" }),
+            ["metallicize"] = new("metallicize", "金属化", "回合结束时获得格挡。", new[] { "金属化", "metallicize" }),
+        };
     private readonly BridgeOptions _options;
     private readonly InstallationProbeResult _probe;
 
@@ -1513,6 +1547,15 @@ internal sealed class Sts2RuntimeReflectionReader
                     textDiagnostics,
                     "Title",
                     "Name");
+                var traits = ExtractTextList(
+                    GetMemberValue(card, "Traits") ?? GetMemberValue(card, "Tags"),
+                    $"player.hand[{index}].traits",
+                    textDiagnostics);
+                var keywords = ExtractTextList(
+                    GetMemberValue(card, "Keywords") ?? GetMemberValue(card, "KeywordIds"),
+                    $"player.hand[{index}].keywords",
+                    textDiagnostics);
+                var description = ResolveCardDescription(card, $"player.hand[{index}].description", textDiagnostics, traits, keywords);
                 return new HandCardDescriptor(
                     RuntimeCardIdentity.CreateCardId(card, index),
                     nameResolution.Text ?? $"card_{index}",
@@ -1520,16 +1563,14 @@ internal sealed class Sts2RuntimeReflectionReader
                     ConvertToText(GetMemberValue(card, "TargetType")),
                     GetBoolean(card, "IsPlayable", defaultValue: true),
                     ResolveCardCanonicalId(card),
-                    ResolveCardDescription(card, $"player.hand[{index}].description", textDiagnostics),
+                    description.CompatibilityDescription,
+                    description.Raw,
+                    description.Rendered,
+                    description.Vars,
+                    description.Glossary,
                     ResolveCardUpgraded(card),
-                    ExtractTextList(
-                        GetMemberValue(card, "Traits") ?? GetMemberValue(card, "Tags"),
-                        $"player.hand[{index}].traits",
-                        textDiagnostics),
-                    ExtractTextList(
-                        GetMemberValue(card, "Keywords") ?? GetMemberValue(card, "KeywordIds"),
-                        $"player.hand[{index}].keywords",
-                        textDiagnostics));
+                    traits,
+                    keywords);
             })
             .ToArray();
     }
@@ -1537,28 +1578,38 @@ internal sealed class Sts2RuntimeReflectionReader
     private IReadOnlyList<RuntimeCard> ExtractCards(object? pile, string path, TextDiagnosticsCollector textDiagnostics)
     {
         return EnumerateObjects(GetMemberValue(pile, "Cards"))
-            .Select((card, index) => new RuntimeCard(
-                CardId: RuntimeCardIdentity.CreateCardId(card, index),
-                Name: ConvertToText(GetMemberValue(card, "Title") ?? GetMemberValue(card, "Name") ?? card, $"{path}[{index}].name", textDiagnostics, "Title", "Name")
-                      ?? $"card_{index}",
-                Cost: ResolveCardCost(card),
-                Playable: GetBoolean(card, "IsPlayable", defaultValue: true),
-                InstanceCardId: RuntimeCardIdentity.CreateCardId(card, index),
-                CanonicalCardId: ResolveCardCanonicalId(card),
-                Description: ResolveCardDescription(card, $"{path}[{index}].description", textDiagnostics),
-                CostForTurn: ResolveCardCostForTurn(card),
-                Upgraded: ResolveCardUpgraded(card),
-                TargetType: ConvertToText(GetMemberValue(card, "TargetType"), $"{path}[{index}].target_type", textDiagnostics),
-                CardType: ConvertToText(GetMemberValue(card, "CardType") ?? GetMemberValue(card, "Type"), $"{path}[{index}].card_type", textDiagnostics),
-                Rarity: ConvertToText(GetMemberValue(card, "Rarity") ?? GetMemberValue(card, "CardRarity"), $"{path}[{index}].rarity", textDiagnostics),
-                Traits: ExtractTextList(
+            .Select((card, index) =>
+            {
+                var traits = ExtractTextList(
                     GetMemberValue(card, "Traits") ?? GetMemberValue(card, "Tags"),
                     $"{path}[{index}].traits",
-                    textDiagnostics),
-                Keywords: ExtractTextList(
+                    textDiagnostics);
+                var keywords = ExtractTextList(
                     GetMemberValue(card, "Keywords") ?? GetMemberValue(card, "KeywordIds"),
                     $"{path}[{index}].keywords",
-                    textDiagnostics)))
+                    textDiagnostics);
+                var description = ResolveCardDescription(card, $"{path}[{index}].description", textDiagnostics, traits, keywords);
+                return new RuntimeCard(
+                    CardId: RuntimeCardIdentity.CreateCardId(card, index),
+                    Name: ConvertToText(GetMemberValue(card, "Title") ?? GetMemberValue(card, "Name") ?? card, $"{path}[{index}].name", textDiagnostics, "Title", "Name")
+                          ?? $"card_{index}",
+                    Cost: ResolveCardCost(card),
+                    Playable: GetBoolean(card, "IsPlayable", defaultValue: true),
+                    InstanceCardId: RuntimeCardIdentity.CreateCardId(card, index),
+                    CanonicalCardId: ResolveCardCanonicalId(card),
+                    Description: description.CompatibilityDescription,
+                    CostForTurn: ResolveCardCostForTurn(card),
+                    Upgraded: ResolveCardUpgraded(card),
+                    TargetType: ConvertToText(GetMemberValue(card, "TargetType"), $"{path}[{index}].target_type", textDiagnostics),
+                    CardType: ConvertToText(GetMemberValue(card, "CardType") ?? GetMemberValue(card, "Type"), $"{path}[{index}].card_type", textDiagnostics),
+                    Rarity: ConvertToText(GetMemberValue(card, "Rarity") ?? GetMemberValue(card, "CardRarity"), $"{path}[{index}].rarity", textDiagnostics),
+                    Traits: traits,
+                    Keywords: keywords,
+                    DescriptionRaw: description.Raw,
+                    DescriptionRendered: description.Rendered,
+                    DescriptionVars: description.Vars,
+                    Glossary: description.Glossary);
+            })
             .ToArray();
     }
 
@@ -2395,9 +2446,14 @@ internal sealed class Sts2RuntimeReflectionReader
                ?? ConvertToText(GetMemberValue(card, "InternalName"));
     }
 
-    private static string? ResolveCardDescription(object? card, string path, TextDiagnosticsCollector textDiagnostics)
+    private static DescriptionExtraction ResolveCardDescription(
+        object? card,
+        string path,
+        TextDiagnosticsCollector textDiagnostics,
+        IReadOnlyList<string>? traits = null,
+        IReadOnlyList<string>? keywords = null)
     {
-        return ConvertToText(
+        var raw = ConvertToText(
             GetMemberValue(card, "Description")
             ?? GetMemberValue(card, "RulesText")
             ?? GetMemberValue(card, "CardText")
@@ -2410,6 +2466,33 @@ internal sealed class Sts2RuntimeReflectionReader
             "CardText",
             "BodyText",
             "Text");
+        var rendered = ConvertToText(
+            GetMemberValue(card, "RenderedDescription")
+            ?? GetMemberValue(card, "RenderedText")
+            ?? GetMemberValue(card, "DisplayDescription")
+            ?? GetMemberValue(card, "DescriptionRendered")
+            ?? GetMemberValue(card, "ResolvedDescription")
+            ?? GetMemberValue(card, "CurrentDescription")
+            ?? GetMemberValue(GetMemberValue(card, "Description"), "RenderedText")
+            ?? GetMemberValue(GetMemberValue(card, "Description"), "Text"),
+            $"{path}.rendered",
+            textDiagnostics,
+            "RenderedDescription",
+            "RenderedText",
+            "DisplayDescription",
+            "DescriptionRendered",
+            "ResolvedDescription",
+            "CurrentDescription");
+        var vars = ExtractDescriptionVariables(card, raw, ResolveCardDescriptionSeedVariables(card, raw, keywords));
+        rendered = RenderDescription(raw, rendered, vars);
+        var glossary = ExtractGlossaryAnchors(
+            canonicalId: null,
+            displayName: ConvertToText(GetMemberValue(card, "Title") ?? GetMemberValue(card, "Name") ?? card),
+            texts: new[] { rendered, raw },
+            keywords: keywords,
+            traits: traits);
+        var compatibilityDescription = ChooseCompatibilityDescription(rendered, raw);
+        return new DescriptionExtraction(raw, rendered, vars, glossary, compatibilityDescription);
     }
 
     private static string ResolveEnemyId(object enemy, int index)
@@ -2543,22 +2626,360 @@ internal sealed class Sts2RuntimeReflectionReader
             return null;
         }
 
+        var raw = ConvertToText(
+            GetMemberValue(power, "Description")
+            ?? GetMemberValue(power, "RulesText")
+            ?? GetMemberValue(power, "Text"),
+            $"{path}.description",
+            textDiagnostics,
+            "Description",
+            "RulesText",
+            "Text");
+        var rendered = ConvertToText(
+            GetMemberValue(power, "RenderedDescription")
+            ?? GetMemberValue(power, "RenderedText")
+            ?? GetMemberValue(power, "DisplayDescription")
+            ?? GetMemberValue(power, "DescriptionRendered"),
+            $"{path}.description_rendered",
+            textDiagnostics,
+            "RenderedDescription",
+            "RenderedText",
+            "DisplayDescription",
+            "DescriptionRendered");
+        var canonicalPowerId = ResolvePowerCanonicalId(power);
+        var vars = ExtractDescriptionVariables(power, raw, ResolvePowerDescriptionSeedVariables(power, canonicalPowerId));
+        rendered = RenderDescription(raw, rendered, vars);
+        var glossary = ExtractGlossaryAnchors(
+            canonicalPowerId,
+            name,
+            new[] { rendered, raw },
+            keywords: null,
+            traits: null);
+
         return new RuntimePowerState(
-            PowerId: ResolvePowerCanonicalId(power) ?? name,
+            PowerId: canonicalPowerId ?? name,
             Name: name,
             Amount: GetNullableInt(power, "Amount")
                     ?? GetNullableInt(power, "Stacks")
                     ?? GetNullableInt(power, "Value"),
-            Description: ConvertToText(
-                GetMemberValue(power, "Description")
-                ?? GetMemberValue(power, "RulesText")
-                ?? GetMemberValue(power, "Text"),
-                $"{path}.description",
-                textDiagnostics,
-                "Description",
-                "RulesText",
-                "Text"),
-            CanonicalPowerId: ResolvePowerCanonicalId(power));
+            Description: ChooseCompatibilityDescription(rendered, raw),
+            CanonicalPowerId: canonicalPowerId,
+            DescriptionRaw: raw,
+            DescriptionRendered: rendered,
+            DescriptionVars: vars,
+            Glossary: glossary);
+    }
+
+    private static IReadOnlyList<DescriptionVariable> ResolveCardDescriptionSeedVariables(object? card, string? raw, IReadOnlyList<string>? keywords)
+    {
+        var variables = new List<DescriptionVariable>();
+        foreach (var key in new[] { "damage", "block", "draw", "strength", "magic" })
+        {
+            if (ShouldSeedDescriptionVariable(key, raw, keywords))
+            {
+                AddSeedVariable(variables, key, card, "member_alias", null);
+            }
+        }
+
+        if (keywords is not null)
+        {
+            foreach (var keyword in keywords)
+            {
+                var normalized = NormalizeGlossaryId(keyword);
+                if (normalized is not null &&
+                    (string.Equals(normalized, "damage", StringComparison.Ordinal) ||
+                     string.Equals(normalized, "block", StringComparison.Ordinal) ||
+                     string.Equals(normalized, "draw", StringComparison.Ordinal) ||
+                     string.Equals(normalized, "strength", StringComparison.Ordinal)))
+                {
+                    AddSeedVariable(variables, normalized, card, "keyword_seed", keyword);
+                }
+            }
+        }
+
+        return DeduplicateVariables(variables);
+    }
+
+    private static bool ShouldSeedDescriptionVariable(string key, string? raw, IReadOnlyList<string>? keywords)
+    {
+        if (keywords is not null && keywords.Any(keyword => string.Equals(NormalizeGlossaryId(keyword), key, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        if (KnownGlossarySpecs.TryGetValue(key, out var spec))
+        {
+            return spec.Terms.Any(term => raw.Contains(term, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return raw.Contains(key, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<DescriptionVariable> ResolvePowerDescriptionSeedVariables(object? power, string? canonicalPowerId)
+    {
+        var variables = new List<DescriptionVariable>();
+        AddSeedVariable(variables, "amount", power, "member_alias", null);
+        var normalizedPowerId = NormalizeGlossaryId(canonicalPowerId);
+        if (normalizedPowerId is not null &&
+            DescriptionVariableMemberAliases.ContainsKey(normalizedPowerId))
+        {
+            AddSeedVariable(variables, normalizedPowerId, power, "power_id", canonicalPowerId);
+        }
+
+        return DeduplicateVariables(variables);
+    }
+
+    private static void AddSeedVariable(List<DescriptionVariable> variables, string key, object? source, string sourceLabel, string? placeholder)
+    {
+        var value = ResolveDescriptionVariableValue(source, key);
+        if (value is null)
+        {
+            return;
+        }
+
+        variables.Add(new DescriptionVariable(key, value, sourceLabel, placeholder));
+    }
+
+    private static IReadOnlyList<DescriptionVariable> ExtractDescriptionVariables(
+        object? source,
+        string? raw,
+        IReadOnlyList<DescriptionVariable>? seedVariables = null)
+    {
+        var variables = new List<DescriptionVariable>();
+        if (seedVariables is not null)
+        {
+            variables.AddRange(seedVariables);
+        }
+
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            foreach (Match match in PlaceholderRegex.Matches(raw))
+            {
+                var placeholder = match.Groups["name"].Value;
+                if (string.IsNullOrWhiteSpace(placeholder))
+                {
+                    continue;
+                }
+
+                var key = NormalizeDescriptionVariableKey(placeholder);
+                var value = ResolveDescriptionVariableValue(source, key);
+                variables.Add(new DescriptionVariable(
+                    key,
+                    value,
+                    "description_placeholder",
+                    placeholder));
+            }
+        }
+
+        return DeduplicateVariables(variables);
+    }
+
+    private static IReadOnlyList<DescriptionVariable> DeduplicateVariables(IEnumerable<DescriptionVariable> variables)
+    {
+        return variables
+            .Where(variable => !string.IsNullOrWhiteSpace(variable.Key))
+            .GroupBy(variable => variable.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var preferred = group.FirstOrDefault(variable => variable.Value is not null);
+                if (preferred is not null)
+                {
+                    return preferred;
+                }
+
+                return group.First();
+            })
+            .ToArray();
+    }
+
+    private static int? ResolveDescriptionVariableValue(object? source, string? key)
+    {
+        if (source is null || string.IsNullOrWhiteSpace(key))
+        {
+            return null;
+        }
+
+        if (!DescriptionVariableMemberAliases.TryGetValue(key, out var aliases))
+        {
+            aliases = new[] { key };
+        }
+
+        foreach (var alias in aliases)
+        {
+            var value = GetNullableInt(source, alias);
+            if (value is not null)
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeDescriptionVariableKey(string? rawKey)
+    {
+        var normalized = NormalizeGlossaryId(rawKey);
+        return normalized switch
+        {
+            "attackdamage" => "damage",
+            "currentdamage" => "damage",
+            "basedamage" => "damage",
+            "damageamount" => "damage",
+            "currentblock" => "block",
+            "baseblock" => "block",
+            "blockamount" => "block",
+            "drawamount" => "draw",
+            "drawcount" => "draw",
+            "carddraw" => "draw",
+            "magicnumber" => "magic",
+            "magicvalue" => "magic",
+            "strengthamount" => "strength",
+            _ => normalized ?? string.Empty,
+        };
+    }
+
+    private static string? RenderDescription(
+        string? raw,
+        string? runtimeRendered,
+        IReadOnlyList<DescriptionVariable>? variables)
+    {
+        var preferred = NormalizeDescriptionText(runtimeRendered);
+        if (!string.IsNullOrWhiteSpace(preferred))
+        {
+            return preferred;
+        }
+
+        var template = NormalizeDescriptionText(raw);
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            return null;
+        }
+
+        var variableMap = (variables ?? Array.Empty<DescriptionVariable>())
+            .Where(variable => !string.IsNullOrWhiteSpace(variable.Key))
+            .GroupBy(variable => variable.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Value, StringComparer.OrdinalIgnoreCase);
+
+        return PlaceholderRegex.Replace(template, match =>
+        {
+            var key = NormalizeDescriptionVariableKey(match.Groups["name"].Value);
+            if (variableMap.TryGetValue(key, out var value) && value is not null)
+            {
+                return value.Value.ToString();
+            }
+
+            return match.Value;
+        });
+    }
+
+    private static string? NormalizeDescriptionText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var normalized = RichTextTagRegex.Replace(text, string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private static string? ChooseCompatibilityDescription(string? rendered, string? raw)
+    {
+        return NormalizeDescriptionText(rendered) ?? NormalizeDescriptionText(raw);
+    }
+
+    private static IReadOnlyList<GlossaryAnchor> ExtractGlossaryAnchors(
+        string? canonicalId,
+        string? displayName,
+        IEnumerable<string?> texts,
+        IReadOnlyList<string>? keywords,
+        IReadOnlyList<string>? traits)
+    {
+        var anchors = new List<GlossaryAnchor>();
+        AddGlossaryAnchorFromId(anchors, canonicalId, displayName, "canonical_id");
+
+        foreach (var keyword in keywords ?? Array.Empty<string>())
+        {
+            AddGlossaryAnchorFromId(anchors, keyword, keyword, "keyword");
+        }
+
+        foreach (var trait in traits ?? Array.Empty<string>())
+        {
+            AddGlossaryAnchorFromId(anchors, trait, trait, "trait");
+        }
+
+        foreach (var text in texts)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            foreach (var spec in KnownGlossarySpecs.Values)
+            {
+                if (spec.Terms.Any(term => text.Contains(term, StringComparison.OrdinalIgnoreCase)))
+                {
+                    AddGlossaryAnchor(anchors, spec.GlossaryId, spec.DisplayText, spec.Hint, "description_text");
+                }
+            }
+        }
+
+        return anchors
+            .GroupBy(anchor => anchor.GlossaryId, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+    }
+
+    private static void AddGlossaryAnchorFromId(List<GlossaryAnchor> anchors, string? rawId, string? displayText, string source)
+    {
+        var normalizedId = NormalizeGlossaryId(rawId);
+        if (string.IsNullOrWhiteSpace(normalizedId))
+        {
+            return;
+        }
+
+        if (KnownGlossarySpecs.TryGetValue(normalizedId, out var spec))
+        {
+            AddGlossaryAnchor(anchors, spec.GlossaryId, spec.DisplayText, spec.Hint, source);
+            return;
+        }
+
+        var normalizedDisplayText = NormalizeDescriptionText(displayText) ?? displayText?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedDisplayText))
+        {
+            return;
+        }
+
+        AddGlossaryAnchor(anchors, normalizedId, normalizedDisplayText!, null, source);
+    }
+
+    private static void AddGlossaryAnchor(List<GlossaryAnchor> anchors, string glossaryId, string displayText, string? hint, string source)
+    {
+        if (anchors.Any(anchor => string.Equals(anchor.GlossaryId, glossaryId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        anchors.Add(new GlossaryAnchor(glossaryId, displayText, hint, source));
+    }
+
+    private static string? NormalizeGlossaryId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return new string(value
+            .Trim()
+            .ToLowerInvariant()
+            .Where(character => char.IsLetterOrDigit(character))
+            .ToArray());
     }
 
     private static IReadOnlyList<string> ExtractTextList(object? collection, string path, TextDiagnosticsCollector textDiagnostics)
@@ -2680,6 +3101,10 @@ internal sealed class Sts2RuntimeReflectionReader
             ["target_type"] = card.TargetType,
             ["canonical_card_id"] = card.CanonicalCardId,
             ["description"] = card.Description,
+            ["description_raw"] = card.DescriptionRaw,
+            ["description_rendered"] = card.DescriptionRendered,
+            ["description_vars"] = card.DescriptionVars,
+            ["glossary"] = card.Glossary,
             ["upgraded"] = card.Upgraded,
             ["traits"] = card.Traits,
             ["keywords"] = card.Keywords,
@@ -2874,6 +3299,19 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private readonly record struct RuntimeRoot(object GameInstance, object? RunNode, object? RunState);
 
+    private sealed record GlossarySpec(
+        string GlossaryId,
+        string DisplayText,
+        string Hint,
+        IReadOnlyList<string> Terms);
+
+    private readonly record struct DescriptionExtraction(
+        string? Raw,
+        string? Rendered,
+        IReadOnlyList<DescriptionVariable> Vars,
+        IReadOnlyList<GlossaryAnchor> Glossary,
+        string? CompatibilityDescription);
+
     private readonly record struct HandCardDescriptor(
         string CardId,
         string Name,
@@ -2882,6 +3320,10 @@ internal sealed class Sts2RuntimeReflectionReader
         bool Playable,
         string? CanonicalCardId,
         string? Description,
+        string? DescriptionRaw,
+        string? DescriptionRendered,
+        IReadOnlyList<DescriptionVariable> DescriptionVars,
+        IReadOnlyList<GlossaryAnchor> Glossary,
         bool? Upgraded,
         IReadOnlyList<string> Traits,
         IReadOnlyList<string> Keywords);

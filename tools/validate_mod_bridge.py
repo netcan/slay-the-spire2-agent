@@ -103,9 +103,14 @@ def main() -> int:
                 assert len(actions) >= 1
         combat_snapshot = fetch(base_url, "/snapshot?phase=combat")
         assert combat_snapshot["player"]["hand"][0]["description"]
+        assert combat_snapshot["player"]["hand"][0]["description_rendered"]
+        assert combat_snapshot["player"]["hand"][0]["description_vars"]
+        assert combat_snapshot["player"]["hand"][0]["glossary"]
         assert combat_snapshot["player"]["powers"][0]["name"]
+        assert combat_snapshot["player"]["powers"][0]["description_vars"]
         assert combat_snapshot["enemies"][0]["intent_type"]
         assert combat_snapshot["enemies"][0]["powers"][0]["name"]
+        assert combat_snapshot["enemies"][0]["powers"][0]["glossary"]
         assert combat_snapshot["run_state"]["act"] == 1
         assert combat_snapshot["run_state"]["map"]["reachable_nodes"]
         combat_actions = fetch(base_url, "/actions?phase=combat")

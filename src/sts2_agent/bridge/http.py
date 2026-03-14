@@ -20,7 +20,9 @@ from sts2_agent.models import (
     ActionSubmission,
     CardView,
     DecisionSnapshot,
+    DescriptionVariable,
     EnemyState,
+    GlossaryAnchor,
     LegalAction,
     PlayerState,
     PowerView,
@@ -224,6 +226,9 @@ class HttpGameBridge(GameBridge):
 
     @staticmethod
     def _decode_card(payload: dict[str, Any]) -> CardView:
+        description_raw = HttpGameBridge._as_optional_str(payload.get("description_raw"))
+        description_rendered = HttpGameBridge._as_optional_str(payload.get("description_rendered"))
+        description = HttpGameBridge._as_optional_str(payload.get("description")) or description_rendered or description_raw
         return CardView(
             card_id=str(payload.get("card_id") or ""),
             name=str(payload.get("name") or ""),
@@ -231,7 +236,7 @@ class HttpGameBridge(GameBridge):
             playable=bool(payload.get("playable", True)),
             instance_card_id=payload.get("instance_card_id"),
             canonical_card_id=payload.get("canonical_card_id"),
-            description=payload.get("description"),
+            description=description,
             cost_for_turn=HttpGameBridge._as_optional_int(payload.get("cost_for_turn")),
             upgraded=payload.get("upgraded") if isinstance(payload.get("upgraded"), bool) else None,
             target_type=payload.get("target_type"),
@@ -239,16 +244,27 @@ class HttpGameBridge(GameBridge):
             rarity=payload.get("rarity"),
             traits=list(payload.get("traits") or []),
             keywords=list(payload.get("keywords") or []),
+            description_raw=description_raw,
+            description_rendered=description_rendered or description,
+            description_vars=HttpGameBridge._decode_description_vars(payload.get("description_vars")),
+            glossary=HttpGameBridge._decode_glossary(payload.get("glossary")),
         )
 
     @staticmethod
     def _decode_power(payload: dict[str, Any]) -> PowerView:
+        description_raw = HttpGameBridge._as_optional_str(payload.get("description_raw"))
+        description_rendered = HttpGameBridge._as_optional_str(payload.get("description_rendered"))
+        description = HttpGameBridge._as_optional_str(payload.get("description")) or description_rendered or description_raw
         return PowerView(
             power_id=str(payload.get("power_id") or ""),
             name=str(payload.get("name") or ""),
             amount=HttpGameBridge._as_optional_int(payload.get("amount")),
-            description=payload.get("description"),
+            description=description,
             canonical_power_id=payload.get("canonical_power_id"),
+            description_raw=description_raw,
+            description_rendered=description_rendered or description,
+            description_vars=HttpGameBridge._decode_description_vars(payload.get("description_vars")),
+            glossary=HttpGameBridge._decode_glossary(payload.get("glossary")),
         )
 
     @staticmethod
@@ -307,3 +323,52 @@ class HttpGameBridge(GameBridge):
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _as_optional_str(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _decode_description_vars(payload: Any) -> list[DescriptionVariable]:
+        if not isinstance(payload, list):
+            return []
+        variables: list[DescriptionVariable] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            if not isinstance(key, str) or not key:
+                continue
+            variables.append(
+                DescriptionVariable(
+                    key=key,
+                    value=HttpGameBridge._as_optional_int(item.get("value")),
+                    source=HttpGameBridge._as_optional_str(item.get("source")),
+                    placeholder=HttpGameBridge._as_optional_str(item.get("placeholder")),
+                )
+            )
+        return variables
+
+    @staticmethod
+    def _decode_glossary(payload: Any) -> list[GlossaryAnchor]:
+        if not isinstance(payload, list):
+            return []
+        glossary: list[GlossaryAnchor] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            glossary_id = item.get("glossary_id")
+            display_text = item.get("display_text")
+            if not isinstance(glossary_id, str) or not glossary_id:
+                continue
+            if not isinstance(display_text, str) or not display_text:
+                continue
+            glossary.append(
+                GlossaryAnchor(
+                    glossary_id=glossary_id,
+                    display_text=display_text,
+                    hint=HttpGameBridge._as_optional_str(item.get("hint")),
+                    source=HttpGameBridge._as_optional_str(item.get("source")),
+                )
+            )
+        return glossary

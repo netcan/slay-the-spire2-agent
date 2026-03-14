@@ -234,7 +234,11 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                             CardType: "Attack",
                             Rarity: "Starter",
                             Traits: new[] { "starter" },
-                            Keywords: new[] { "damage" }),
+                            Keywords: new[] { "damage" },
+                            DescriptionRaw: "Deal {Damage:diff()} damage.",
+                            DescriptionRendered: "Deal 6 damage.",
+                            DescriptionVars: new[] { new DescriptionVariable("damage", 6, "description_placeholder", "Damage") },
+                            Glossary: new[] { new GlossaryAnchor("damage", "Damage", "Reduces HP.", "description_text") }),
                         new RuntimeCard(
                             "defend_red#1",
                             "Defend",
@@ -249,7 +253,11 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                             CardType: "Skill",
                             Rarity: "Starter",
                             Traits: new[] { "starter" },
-                            Keywords: new[] { "block" }),
+                            Keywords: new[] { "block" },
+                            DescriptionRaw: "Gain {Block:diff()} [gold]Block[/gold].",
+                            DescriptionRendered: "Gain 5 Block.",
+                            DescriptionVars: new[] { new DescriptionVariable("block", 5, "description_placeholder", "Block") },
+                            Glossary: new[] { new GlossaryAnchor("block", "Block", "Prevents damage until next turn.", "description_text") }),
                     },
                     DrawPile: 12,
                     DiscardPile: 4,
@@ -258,7 +266,20 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                     Potions: new[] { "Strength Potion" },
                     Powers: new[]
                     {
-                        new RuntimePowerState("metallicize", "Metallicize", 3, "At the end of your turn, gain 3 Block.", "metallicize"),
+                        new RuntimePowerState(
+                            "metallicize",
+                            "Metallicize",
+                            3,
+                            "At the end of your turn, gain 3 Block.",
+                            "metallicize",
+                            DescriptionRaw: "At the end of your turn, gain {Amount} [gold]Block[/gold].",
+                            DescriptionRendered: "At the end of your turn, gain 3 Block.",
+                            DescriptionVars: new[] { new DescriptionVariable("amount", 3, "member_alias", "Amount") },
+                            Glossary: new[]
+                            {
+                                new GlossaryAnchor("metallicize", "Metallicize", "Gain Block at end of turn.", "canonical_id"),
+                                new GlossaryAnchor("block", "Block", "Prevents damage until next turn.", "description_text"),
+                            }),
                     }),
                 new[]
                 {
@@ -280,7 +301,15 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                         IntentEffects: Array.Empty<string>(),
                         Powers: new[]
                         {
-                            new RuntimePowerState("strength", "Strength", 3, "Increases attack damage.", "strength"),
+                            new RuntimePowerState(
+                                "strength",
+                                "Strength",
+                                3,
+                                "Increases attack damage.",
+                                "strength",
+                                DescriptionRendered: "Increases attack damage.",
+                                DescriptionVars: new[] { new DescriptionVariable("strength", 3, "power_id", "strength") },
+                                Glossary: new[] { new GlossaryAnchor("strength", "Strength", "Increases attack damage.", "canonical_id") }),
                         }),
                 },
                 Array.Empty<string>(),
@@ -320,7 +349,19 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                     0,
                     new[] { "Burning Blood" },
                     Array.Empty<string>(),
-                    new[] { new RuntimePowerState("metallicize", "Metallicize", 3, "At the end of your turn, gain 3 Block.", "metallicize") }),
+                    new[]
+                    {
+                        new RuntimePowerState(
+                            "metallicize",
+                            "Metallicize",
+                            3,
+                            "At the end of your turn, gain 3 Block.",
+                            "metallicize",
+                            DescriptionRaw: "At the end of your turn, gain {Amount} [gold]Block[/gold].",
+                            DescriptionRendered: "At the end of your turn, gain 3 Block.",
+                            DescriptionVars: new[] { new DescriptionVariable("amount", 3, "member_alias", "Amount") },
+                            Glossary: new[] { new GlossaryAnchor("block", "Block", "Prevents damage until next turn.", "description_text") }),
+                    }),
                 Array.Empty<RuntimeEnemyState>(),
                 Array.Empty<string>(),
                 new[] { "monster_left", "elite_center", "question_right" },
@@ -431,7 +472,19 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
             0,
             new[] { "Burning Blood" },
             Array.Empty<string>(),
-            new[] { new RuntimePowerState("metallicize", "Metallicize", 3, "At the end of your turn, gain 3 Block.", "metallicize") });
+            new[]
+            {
+                new RuntimePowerState(
+                    "metallicize",
+                    "Metallicize",
+                    3,
+                    "At the end of your turn, gain 3 Block.",
+                    "metallicize",
+                    DescriptionRaw: "At the end of your turn, gain {Amount} [gold]Block[/gold].",
+                    DescriptionRendered: "At the end of your turn, gain 3 Block.",
+                    DescriptionVars: new[] { new DescriptionVariable("amount", 3, "member_alias", "Amount") },
+                    Glossary: new[] { new GlossaryAnchor("block", "Block", "Prevents damage until next turn.", "description_text") }),
+            });
 
         var rewardChoiceLabels = new[]
         {
