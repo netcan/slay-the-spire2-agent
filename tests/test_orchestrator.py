@@ -116,6 +116,7 @@ class SequencedCombatBridge:
             self.snapshot_reads[self.index] = self.snapshot_reads.get(self.index, 0)
         window = self.windows[self.index]
         metadata = dict(window.get("metadata", {}))
+        raw_enemies = window.get("enemies")
         return DecisionSnapshot(
             session_id=session_id,
             decision_id=f"dec-{self.index}",
@@ -132,7 +133,7 @@ class SequencedCombatBridge:
                     for card_id in window.get("hand", ["card-1"])
                 ],
             ),
-            enemies=[EnemyState(enemy_id="1", name="Louse", hp=20, max_hp=20, block=0, intent="unknown")],
+            enemies=[EnemyState(**enemy) for enemy in raw_enemies] if raw_enemies is not None else [EnemyState(enemy_id="1", name="Louse", hp=20, max_hp=20, block=0, intent="unknown")],
             terminal=bool(window.get("terminal", False)),
             metadata=metadata,
         )
@@ -220,6 +221,66 @@ class RetryableStaleBridge(SequencedCombatBridge):
         return super().submit_action(submission)
 
 
+class RetryableAutoEndTurnStaleBridge(SequencedCombatBridge):
+    def __init__(self) -> None:
+        super().__init__(
+            [
+                make_window(actions=[{"type": "end_turn", "label": "End Turn"}], energy=0, hand=[]),
+                make_window(phase="reward", actions=[], metadata={}),
+            ]
+        )
+        self._stale_raised = False
+
+    def submit_action(self, submission: ActionSubmission) -> ActionResult:
+        if not self._stale_raised:
+            self._stale_raised = True
+            raise StaleActionError("Requested decision_id is no longer current.")
+        return super().submit_action(submission)
+
+
+class DelayedEndTurnResolutionBridge(SequencedCombatBridge):
+    def __init__(self) -> None:
+        super().__init__(
+            [
+                make_window(actions=[{"type": "end_turn", "label": "End Turn"}], energy=0, hand=[], metadata={"current_side": "Player", "round_number": 1}),
+                make_window(actions=[], hand=[], metadata={"current_side": "Enemy", "round_number": 1}),
+                make_window(phase="reward", actions=[], metadata={}),
+            ]
+        )
+        self._end_turn_pending = False
+        self._pending_reads = 0
+        self._enemy_reads = 0
+
+    def get_snapshot(self, session_id: str) -> DecisionSnapshot:
+        if self._end_turn_pending:
+            self._pending_reads += 1
+            if self._pending_reads >= 3 and self.index == 0:
+                self.index += 1
+                self._end_turn_pending = False
+                self._pending_reads = 0
+        elif self.index == 1:
+            self._enemy_reads += 1
+            if self._enemy_reads >= 2:
+                self.index = 2
+        return super().get_snapshot(session_id)
+
+    def submit_action(self, submission: ActionSubmission) -> ActionResult:
+        legal_actions = {action.action_id: action for action in self.get_legal_actions(submission.session_id)}
+        accepted = legal_actions[submission.action_id]
+        self.submissions.append(accepted.type)
+        self._end_turn_pending = True
+        return ActionResult(
+            status=ActionStatus.ACCEPTED,
+            session_id=submission.session_id,
+            decision_id="dec-0",
+            state_version=0,
+            accepted_action_id=accepted.action_id,
+            message="Ended the current turn.",
+            terminal=False,
+            metadata={"phase": "combat"},
+        )
+
+
 def make_window(
     *,
     phase: str = "combat",
@@ -228,6 +289,7 @@ def make_window(
     energy: int = 3,
     hand: list[str] | None = None,
     metadata: dict[str, object] | None = None,
+    enemies: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "phase": phase,
@@ -236,6 +298,7 @@ def make_window(
         "energy": energy,
         "hand": hand or ["card-1"],
         "metadata": metadata or {"current_side": "Player", "round_number": 1},
+        "enemies": enemies,
     }
 
 
@@ -259,6 +322,30 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(summary.ended_by, "battle_completed")
             records = Path(summary.trace_path).read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(records), 1)
+
+    def test_battle_mode_completes_when_no_enemies_remain_in_combat_snapshot(self) -> None:
+        bridge = SequencedCombatBridge(
+            [
+                make_window(
+                    actions=[{"type": "end_turn", "label": "End Turn"}],
+                    hand=[],
+                    metadata={"current_side": "Player", "round_number": 4},
+                    enemies=[],
+                )
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator = AutoplayOrchestrator(
+                bridge=bridge,
+                policy=FirstLegalActionPolicy(),
+                config=OrchestratorConfig(trace_dir=tmpdir, stop_after_player_turn=False),
+            )
+            summary = orchestrator.run(scenario="live")
+
+            self.assertTrue(summary.completed)
+            self.assertFalse(summary.interrupted)
+            self.assertTrue(summary.battle_completed)
+            self.assertEqual(summary.ended_by, "battle_completed")
 
     def test_invalid_policy_action_interrupts_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -475,6 +562,41 @@ class OrchestratorTests(unittest.TestCase):
             records = [json.loads(line) for line in Path(summary.trace_path).read_text(encoding="utf-8").splitlines()]
             self.assertEqual(records[0]["stop_reason"], "stale_action_retry")
             self.assertFalse(records[0]["is_final_step"])
+
+    def test_orchestrator_retries_stale_auto_end_turn_with_fresh_state(self) -> None:
+        bridge = RetryableAutoEndTurnStaleBridge()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orchestrator = AutoplayOrchestrator(
+                bridge=bridge,
+                policy=FirstLegalActionPolicy(),
+                config=OrchestratorConfig(trace_dir=tmpdir, stale_action_retries=1),
+            )
+            summary = orchestrator.run(scenario="live")
+
+            self.assertTrue(summary.completed)
+            self.assertFalse(summary.interrupted)
+            self.assertEqual(summary.ended_by, "auto_end_turn")
+            self.assertEqual(bridge.submissions, ["end_turn"])
+            records = [json.loads(line) for line in Path(summary.trace_path).read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(records[0]["stop_reason"], "stale_action_retry")
+            self.assertFalse(records[0]["is_final_step"])
+
+    def test_battle_mode_waits_for_end_turn_resolution_before_retrying(self) -> None:
+        bridge = DelayedEndTurnResolutionBridge()
+        with tempfile.TemporaryDirectory() as tmpdir, patch("sts2_agent.orchestrator.time.sleep", return_value=None):
+            orchestrator = AutoplayOrchestrator(
+                bridge=bridge,
+                policy=FirstLegalActionPolicy(),
+                config=OrchestratorConfig(trace_dir=tmpdir, stop_after_player_turn=False, max_steps=12),
+            )
+            summary = orchestrator.run(scenario="live")
+
+            self.assertTrue(summary.completed)
+            self.assertFalse(summary.interrupted)
+            self.assertTrue(summary.battle_completed)
+            self.assertEqual(bridge.submissions, ["end_turn"])
+            records = [json.loads(line) for line in Path(summary.trace_path).read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(any(record["bridge_result"].get("reason") == "pending_end_turn_transition" for record in records))
 
     def test_orchestrator_filters_unplayable_cards_and_auto_ends_turn(self) -> None:
         bridge = SequencedCombatBridge(

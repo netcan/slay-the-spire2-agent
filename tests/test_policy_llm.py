@@ -106,6 +106,41 @@ class ChatCompletionsPolicyTests(unittest.TestCase):
         self.assertIsNone(decision.action_id)
         self.assertTrue(decision.halt)
 
+    def test_policy_accepts_json_inside_markdown_fence(self) -> None:
+        response_payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "```json\n{\"action_id\": \"act-1\", \"reason\": \"先出防御\", \"halt\": false}\n```"
+                    }
+                }
+            ]
+        }
+
+        with patch("sts2_agent.policy.llm.urlopen", return_value=FakeHttpResponse(response_payload)):
+            decision = self.policy.decide(build_snapshot(), build_actions())
+
+        self.assertEqual(decision.action_id, "act-1")
+        self.assertFalse(decision.halt)
+
+    def test_policy_accepts_json_embedded_in_extra_text(self) -> None:
+        response_payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "我建议这样操作：\n{\"action_id\": \"act-1\", \"reason\": \"先出防御\", \"halt\": false}\n这样更稳。"
+                    }
+                }
+            ]
+        }
+
+        with patch("sts2_agent.policy.llm.urlopen", return_value=FakeHttpResponse(response_payload)):
+            decision = self.policy.decide(build_snapshot(), build_actions())
+
+        self.assertEqual(decision.action_id, "act-1")
+        self.assertEqual(decision.reason, "先出防御")
+        self.assertFalse(decision.halt)
+
     def test_policy_raises_timeout(self) -> None:
         with patch("sts2_agent.policy.llm.urlopen", side_effect=TimeoutError()):
             with self.assertRaises(ChatCompletionsTimeoutError):

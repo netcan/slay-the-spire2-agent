@@ -51,6 +51,7 @@ class AutoplayOrchestrator:
         turns_completed = 0
         current_turn_marker: object | None = None
         waiting_since: float | None = None
+        pending_end_turn_transition: tuple[str, int] | None = None
         stale_action_attempts = 0
         consecutive_failures = 0
         step_index = 0
@@ -58,6 +59,9 @@ class AutoplayOrchestrator:
         while step_index < self.config.max_steps:
             snapshot, legal_actions = self._read_consistent_state(session.session_id)
             legal_actions = self._effective_legal_actions(snapshot, legal_actions)
+            if pending_end_turn_transition is not None:
+                if (snapshot.decision_id, snapshot.state_version) != pending_end_turn_transition:
+                    pending_end_turn_transition = None
             player_turn = self._is_player_turn(snapshot)
             current_turn_marker, current_turn_index, current_turn_actions = self._update_turn_state(
                 snapshot,
@@ -144,6 +148,25 @@ class AutoplayOrchestrator:
                     current_turn_index=current_turn_index,
                 )
 
+            if pending_end_turn_transition is not None:
+                outcome = self._handle_pending_end_turn_transition(
+                    recorder=recorder,
+                    snapshot=snapshot,
+                    legal_actions=legal_actions,
+                    step_index=step_index,
+                    current_turn_index=current_turn_index,
+                    current_turn_actions=current_turn_actions,
+                    total_actions=total_actions,
+                    turns_completed=turns_completed,
+                    trace_path=trace_path,
+                    waiting_since=waiting_since,
+                )
+                step_index = outcome["step_index"]
+                waiting_since = outcome["waiting_since"]
+                if outcome["summary"] is not None:
+                    return outcome["summary"]
+                continue
+
             if not player_turn:
                 outcome = self._handle_non_player_turn(
                     recorder=recorder,
@@ -187,6 +210,9 @@ class AutoplayOrchestrator:
                 turns_completed=turns_completed,
                 total_actions=total_actions,
                 trace_path=trace_path,
+                stale_action_attempts=stale_action_attempts,
+                consecutive_failures=consecutive_failures,
+                session_id=session.session_id,
             )
             if auto_end_result["summary"] is not None:
                 return auto_end_result["summary"]
@@ -194,8 +220,9 @@ class AutoplayOrchestrator:
                 step_index = auto_end_result["step_index"]
                 current_turn_actions = auto_end_result["current_turn_actions"]
                 total_actions = auto_end_result["total_actions"]
-                stale_action_attempts = 0
-                consecutive_failures = 0
+                stale_action_attempts = auto_end_result["stale_action_attempts"]
+                consecutive_failures = auto_end_result["consecutive_failures"]
+                pending_end_turn_transition = auto_end_result["pending_end_turn_transition"]
                 continue
 
             action_result = self._run_player_step(
@@ -217,6 +244,7 @@ class AutoplayOrchestrator:
             total_actions = action_result["total_actions"]
             stale_action_attempts = action_result["stale_action_attempts"]
             consecutive_failures = action_result["consecutive_failures"]
+            pending_end_turn_transition = action_result["pending_end_turn_transition"]
             if action_result["summary"] is not None:
                 return action_result["summary"]
 
@@ -326,6 +354,80 @@ class AutoplayOrchestrator:
             "summary": None,
         }
 
+    def _handle_pending_end_turn_transition(
+        self,
+        *,
+        recorder: JsonlTraceRecorder,
+        snapshot,
+        legal_actions,
+        step_index: int,
+        current_turn_index: int,
+        current_turn_actions: int,
+        total_actions: int,
+        turns_completed: int,
+        trace_path: Path,
+        waiting_since: float | None,
+    ) -> dict[str, object]:
+        step_index += 1
+        if waiting_since is None:
+            waiting_since = time.monotonic()
+        if time.monotonic() - waiting_since > self.config.wait_for_next_player_turn_seconds:
+            self._record(
+                recorder=recorder,
+                snapshot=snapshot,
+                legal_actions=legal_actions,
+                policy_output=PolicyDecision(action_id=None, reason="waiting for end_turn transition", halt=True),
+                bridge_result={"status": "waiting", "reason": "next_player_turn_timeout"},
+                interrupted=True,
+                step_index=step_index,
+                current_turn_index=current_turn_index,
+                actions_this_turn=current_turn_actions,
+                total_actions=total_actions,
+                waiting_for_player_turn=True,
+                is_final_step=True,
+                stop_reason="next_player_turn_timeout",
+                battle_stop_reason="next_player_turn_timeout",
+            )
+            return {
+                "step_index": step_index,
+                "waiting_since": waiting_since,
+                "summary": self._finish(
+                    session_id=snapshot.session_id,
+                    trace_path=trace_path,
+                    reason="next_player_turn_timeout",
+                    completed=False,
+                    interrupted=True,
+                    turn_completed=turns_completed > 0,
+                    actions_this_turn=current_turn_actions,
+                    turns_completed=turns_completed,
+                    total_actions=total_actions,
+                    current_turn_index=current_turn_index,
+                ),
+            }
+
+        self._record(
+            recorder=recorder,
+            snapshot=snapshot,
+            legal_actions=legal_actions,
+            policy_output=PolicyDecision(action_id=None, reason="waiting for end_turn transition", halt=True),
+            bridge_result={"status": "waiting", "reason": "pending_end_turn_transition"},
+            interrupted=False,
+            step_index=step_index,
+            current_turn_index=current_turn_index,
+            actions_this_turn=current_turn_actions,
+            total_actions=total_actions,
+            waiting_for_player_turn=True,
+            is_final_step=False,
+            stop_reason="",
+            battle_stop_reason="",
+        )
+        time.sleep(self.config.poll_interval_seconds)
+        return {
+            "step_index": step_index,
+            "waiting_since": waiting_since,
+            "summary": None,
+        }
+
     def _player_turn_preflight(
         self,
         *,
@@ -377,6 +479,9 @@ class AutoplayOrchestrator:
         turns_completed: int,
         total_actions: int,
         trace_path: Path,
+        stale_action_attempts: int,
+        consecutive_failures: int,
+        session_id: str,
     ) -> dict[str, object]:
         if not self._is_only_end_turn(legal_actions):
             return {
@@ -385,50 +490,136 @@ class AutoplayOrchestrator:
                 "step_index": step_index,
                 "current_turn_actions": current_turn_actions,
                 "total_actions": total_actions,
+                "stale_action_attempts": stale_action_attempts,
+                "consecutive_failures": consecutive_failures,
+                "pending_end_turn_transition": None,
             }
 
         if self.config.auto_end_turn_when_only_end_turn and not self.config.dry_run:
-            step_index += 1
-            auto_end_turn = legal_actions[0]
-            policy_output = PolicyDecision(
-                action_id=auto_end_turn.action_id,
-                reason="only end_turn remains; runner auto ends turn",
-                metadata={"auto_end_turn": True},
-            )
-            result = self.bridge.submit_action(
-                ActionSubmission(
-                    session_id=snapshot.session_id,
-                    decision_id=snapshot.decision_id,
-                    state_version=snapshot.state_version,
+            try:
+                step_index += 1
+                auto_end_turn = legal_actions[0]
+                policy_output = PolicyDecision(
                     action_id=auto_end_turn.action_id,
-                    args=self._build_action_args(auto_end_turn),
+                    reason="only end_turn remains; runner auto ends turn",
+                    metadata={"auto_end_turn": True},
                 )
-            )
-            total_actions += 1
-            current_turn_actions += 1
-            stop_reason = "auto_end_turn" if self.config.stop_after_player_turn else ""
-            self._record(
-                recorder=recorder,
-                snapshot=snapshot,
-                legal_actions=legal_actions,
-                policy_output=policy_output,
-                bridge_result=to_dict(result),
-                interrupted=False,
-                step_index=step_index,
-                current_turn_index=current_turn_index,
-                actions_this_turn=current_turn_actions,
-                total_actions=total_actions,
-                waiting_for_player_turn=False,
-                is_final_step=bool(stop_reason),
-                stop_reason=stop_reason,
-                battle_stop_reason=stop_reason,
-            )
+                result = self.bridge.submit_action(
+                    ActionSubmission(
+                        session_id=snapshot.session_id,
+                        decision_id=snapshot.decision_id,
+                        state_version=snapshot.state_version,
+                        action_id=auto_end_turn.action_id,
+                        args=self._build_action_args(auto_end_turn),
+                    )
+                )
+                total_actions += 1
+                current_turn_actions += 1
+                stale_action_attempts = 0
+                consecutive_failures = 0
+                stop_reason = "auto_end_turn" if self.config.stop_after_player_turn else ""
+                self._record(
+                    recorder=recorder,
+                    snapshot=snapshot,
+                    legal_actions=legal_actions,
+                    policy_output=policy_output,
+                    bridge_result=to_dict(result),
+                    interrupted=False,
+                    step_index=step_index,
+                    current_turn_index=current_turn_index,
+                    actions_this_turn=current_turn_actions,
+                    total_actions=total_actions,
+                    waiting_for_player_turn=False,
+                    is_final_step=bool(stop_reason),
+                    stop_reason=stop_reason,
+                    battle_stop_reason=stop_reason,
+                )
+            except StaleActionError as exc:
+                stale_action_attempts += 1
+                consecutive_failures += 1
+                retrying = stale_action_attempts <= self.config.stale_action_retries
+                self._record(
+                    recorder=recorder,
+                    snapshot=snapshot,
+                    legal_actions=legal_actions,
+                    policy_output=PolicyDecision(
+                        action_id=legal_actions[0].action_id,
+                        reason="only end_turn remains; runner auto ends turn",
+                        metadata={"auto_end_turn": True},
+                    ),
+                    bridge_result={
+                        "status": "interrupted",
+                        "error_code": getattr(exc, "error_code", "stale_action"),
+                        "message": str(exc),
+                        "retrying": retrying,
+                        "stale_action_attempts": stale_action_attempts,
+                        "consecutive_failures": consecutive_failures,
+                    },
+                    interrupted=not retrying,
+                    step_index=step_index,
+                    current_turn_index=current_turn_index,
+                    actions_this_turn=current_turn_actions,
+                    total_actions=total_actions,
+                    waiting_for_player_turn=False,
+                    is_final_step=not retrying,
+                    stop_reason="stale_action" if not retrying else "stale_action_retry",
+                    battle_stop_reason="stale_action" if not retrying else "",
+                )
+                return {
+                    "consumed": retrying,
+                    "step_index": step_index,
+                    "current_turn_actions": current_turn_actions,
+                    "total_actions": total_actions,
+                    "stale_action_attempts": stale_action_attempts,
+                    "consecutive_failures": consecutive_failures,
+                    "pending_end_turn_transition": None,
+                    "summary": None if retrying else self._finish(
+                        session_id=session_id,
+                        trace_path=trace_path,
+                        reason=getattr(exc, "error_code", "stale_action"),
+                        completed=False,
+                        interrupted=True,
+                        actions_this_turn=current_turn_actions,
+                        turns_completed=turns_completed,
+                        total_actions=total_actions,
+                        current_turn_index=current_turn_index,
+                    ),
+                }
+            except (InvalidPayloadError, InterruptedSessionError, BridgeError) as exc:
+                failure = self._finalize_failure(
+                    exc=exc,
+                    recorder=recorder,
+                    snapshot=snapshot,
+                    legal_actions=legal_actions,
+                    step_index=step_index,
+                    current_turn_index=current_turn_index,
+                    current_turn_actions=current_turn_actions,
+                    turns_completed=turns_completed,
+                    total_actions=total_actions,
+                    stale_action_attempts=stale_action_attempts,
+                    consecutive_failures=consecutive_failures + 1,
+                    trace_path=trace_path,
+                    session_id=session_id,
+                )
+                return {
+                    "consumed": True,
+                    "step_index": failure["step_index"],
+                    "current_turn_actions": failure["current_turn_actions"],
+                    "total_actions": failure["total_actions"],
+                    "stale_action_attempts": failure["stale_action_attempts"],
+                    "consecutive_failures": failure["consecutive_failures"],
+                    "pending_end_turn_transition": failure["pending_end_turn_transition"],
+                    "summary": failure["summary"],
+                }
             if self.config.stop_after_player_turn:
                 return {
                     "consumed": True,
                     "step_index": step_index,
                     "current_turn_actions": current_turn_actions,
                     "total_actions": total_actions,
+                    "stale_action_attempts": stale_action_attempts,
+                    "consecutive_failures": consecutive_failures,
+                    "pending_end_turn_transition": None,
                     "summary": self._finish(
                         session_id=snapshot.session_id,
                         trace_path=trace_path,
@@ -447,6 +638,9 @@ class AutoplayOrchestrator:
                 "step_index": step_index,
                 "current_turn_actions": current_turn_actions,
                 "total_actions": total_actions,
+                "stale_action_attempts": stale_action_attempts,
+                "consecutive_failures": consecutive_failures,
+                "pending_end_turn_transition": (snapshot.decision_id, snapshot.state_version),
                 "summary": None,
             }
 
@@ -455,6 +649,9 @@ class AutoplayOrchestrator:
             "step_index": step_index,
             "current_turn_actions": current_turn_actions,
             "total_actions": total_actions,
+            "stale_action_attempts": stale_action_attempts,
+            "consecutive_failures": consecutive_failures,
+            "pending_end_turn_transition": None,
             "summary": self._finish(
                 session_id=snapshot.session_id,
                 trace_path=trace_path,
@@ -511,6 +708,7 @@ class AutoplayOrchestrator:
                     total_actions=total_actions,
                     stale_action_attempts=stale_action_attempts,
                     consecutive_failures=consecutive_failures,
+                    pending_end_turn_transition=None,
                     summary=self._finish(
                         session_id=session_id,
                         trace_path=trace_path,
@@ -556,6 +754,7 @@ class AutoplayOrchestrator:
                     total_actions=total_actions,
                     stale_action_attempts=stale_action_attempts,
                     consecutive_failures=consecutive_failures,
+                    pending_end_turn_transition=None,
                     summary=self._finish(
                         session_id=session_id,
                         trace_path=trace_path,
@@ -606,6 +805,7 @@ class AutoplayOrchestrator:
                     total_actions=total_actions,
                     stale_action_attempts=stale_action_attempts,
                     consecutive_failures=consecutive_failures,
+                    pending_end_turn_transition=None if self.config.stop_after_player_turn or selected_action.type != "end_turn" else (snapshot.decision_id, snapshot.state_version),
                     summary=self._finish(
                         session_id=session_id,
                         trace_path=trace_path,
@@ -626,6 +826,7 @@ class AutoplayOrchestrator:
                 total_actions=total_actions,
                 stale_action_attempts=stale_action_attempts,
                 consecutive_failures=consecutive_failures,
+                pending_end_turn_transition=None if selected_action.type != "end_turn" or self.config.stop_after_player_turn else (snapshot.decision_id, snapshot.state_version),
                 summary=None,
             )
         except StaleActionError as exc:
@@ -664,6 +865,7 @@ class AutoplayOrchestrator:
                     total_actions=total_actions,
                     stale_action_attempts=stale_action_attempts,
                     consecutive_failures=consecutive_failures,
+                    pending_end_turn_transition=None,
                     summary=None,
                 )
             return self._step_result(
@@ -672,6 +874,7 @@ class AutoplayOrchestrator:
                 total_actions=total_actions,
                 stale_action_attempts=stale_action_attempts,
                 consecutive_failures=consecutive_failures,
+                pending_end_turn_transition=None,
                 summary=self._finish(
                     session_id=session_id,
                     trace_path=trace_path,
@@ -774,6 +977,7 @@ class AutoplayOrchestrator:
             total_actions=total_actions,
             stale_action_attempts=stale_action_attempts,
             consecutive_failures=consecutive_failures,
+            pending_end_turn_transition=None,
             summary=self._finish(
                 session_id=session_id,
                 trace_path=trace_path,
@@ -793,9 +997,10 @@ class AutoplayOrchestrator:
         step_index: int,
         current_turn_actions: int,
         total_actions: int,
-        stale_action_attempts: int,
-        consecutive_failures: int,
-        summary: RunSummary | None,
+            stale_action_attempts: int,
+            consecutive_failures: int,
+            pending_end_turn_transition: tuple[str, int] | None,
+            summary: RunSummary | None,
     ) -> dict[str, object]:
         return {
             "step_index": step_index,
@@ -803,6 +1008,7 @@ class AutoplayOrchestrator:
             "total_actions": total_actions,
             "stale_action_attempts": stale_action_attempts,
             "consecutive_failures": consecutive_failures,
+            "pending_end_turn_transition": pending_end_turn_transition,
             "summary": summary,
         }
 
@@ -890,6 +1096,11 @@ class AutoplayOrchestrator:
         if self.config.stop_after_player_turn:
             return ""
         if snapshot.phase != "combat":
+            return "battle_completed"
+        enemies = getattr(snapshot, "enemies", []) or []
+        if enemies and not any(getattr(enemy, "is_alive", True) for enemy in enemies):
+            return "battle_completed"
+        if not enemies:
             return "battle_completed"
         return ""
 

@@ -149,7 +149,13 @@ class ChatCompletionsPolicy:
         try:
             payload = json.loads(candidate)
         except json.JSONDecodeError as exc:
-            raise ChatCompletionsParseError("chat completions response is not valid JSON") from exc
+            extracted = ChatCompletionsPolicy._extract_json_object(candidate)
+            if extracted is None:
+                raise ChatCompletionsParseError("chat completions response is not valid JSON") from exc
+            try:
+                payload = json.loads(extracted)
+            except json.JSONDecodeError as nested_exc:
+                raise ChatCompletionsParseError("chat completions response is not valid JSON") from nested_exc
         if not isinstance(payload, dict):
             raise ChatCompletionsParseError("chat completions response JSON must be an object")
         action_id = payload.get("action_id")
@@ -166,6 +172,35 @@ class ChatCompletionsPolicy:
             "reason": reason.strip(),
             "halt": halt,
         }
+
+    @staticmethod
+    def _extract_json_object(text: str) -> str | None:
+        start = text.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1]
+        return None
 
     @staticmethod
     def _summarize_action(action: LegalAction) -> dict[str, Any]:
