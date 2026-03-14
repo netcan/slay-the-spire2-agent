@@ -19,6 +19,8 @@
         "description": "At end of turn gain 3 Block.",
         "description_raw": "At end of turn gain {Amount} [gold]Block[/gold].",
         "description_rendered": "At end of turn gain 3 Block.",
+        "description_quality": "resolved",
+        "description_source": "rendered_from_vars",
         "description_vars": [
           {"key": "amount", "value": 3, "source": "member_alias", "placeholder": "Amount"}
         ],
@@ -40,6 +42,8 @@
         "description": "Deal 6 damage.",
         "description_raw": "Deal {Damage:diff()} damage.",
         "description_rendered": "Deal 6 damage.",
+        "description_quality": "resolved",
+        "description_source": "rendered_from_vars",
         "description_vars": [
           {"key": "damage", "value": 6, "source": "description_placeholder", "placeholder": "Damage"}
         ],
@@ -64,6 +68,8 @@
         "description": "Gain 5 Block.",
         "description_raw": "Gain {Block:diff()} [gold]Block[/gold].",
         "description_rendered": "Gain 5 Block.",
+        "description_quality": "resolved",
+        "description_source": "rendered_from_vars",
         "description_vars": [
           {"key": "block", "value": 5, "source": "description_placeholder", "placeholder": "Block"}
         ],
@@ -76,6 +82,32 @@
         "rarity": "Starter",
         "traits": ["starter"],
         "keywords": ["block"]
+      },
+      {
+        "card_id": "battle_trance#2",
+        "instance_card_id": "battle_trance#2",
+        "canonical_card_id": "battle_trance",
+        "name": "Battle Trance",
+        "cost": 0,
+        "cost_for_turn": 0,
+        "playable": true,
+        "description": "Draw {Draw:diff()} cards.",
+        "description_raw": "Draw {Draw:diff()} cards.",
+        "description_rendered": "Draw {Draw:diff()} cards.",
+        "description_quality": "template_fallback",
+        "description_source": "raw_template",
+        "description_vars": [
+          {"key": "draw", "value": null, "source": "description_placeholder", "placeholder": "Draw"}
+        ],
+        "glossary": [
+          {"glossary_id": "draw", "display_text": "Draw", "hint": "Add cards from your draw pile to your hand.", "source": "description_text"}
+        ],
+        "upgraded": false,
+        "target_type": "Self",
+        "card_type": "Skill",
+        "rarity": "Common",
+        "traits": ["draw"],
+        "keywords": ["draw"]
       }
     ]
   },
@@ -102,6 +134,8 @@
           "amount": 3,
           "description": "Increase attack damage.",
           "description_rendered": "Increase attack damage.",
+          "description_quality": "resolved",
+          "description_source": "runtime_rendered",
           "description_vars": [
             {"key": "strength", "value": 3, "source": "power_id"}
           ],

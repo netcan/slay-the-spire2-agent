@@ -246,6 +246,8 @@ class HttpGameBridge(GameBridge):
             keywords=list(payload.get("keywords") or []),
             description_raw=description_raw,
             description_rendered=description_rendered or description,
+            description_quality=HttpGameBridge._as_optional_str(payload.get("description_quality")),
+            description_source=HttpGameBridge._as_optional_str(payload.get("description_source")),
             description_vars=HttpGameBridge._decode_description_vars(payload.get("description_vars")),
             glossary=HttpGameBridge._decode_glossary(payload.get("glossary")),
         )
@@ -263,6 +265,8 @@ class HttpGameBridge(GameBridge):
             canonical_power_id=payload.get("canonical_power_id"),
             description_raw=description_raw,
             description_rendered=description_rendered or description,
+            description_quality=HttpGameBridge._as_optional_str(payload.get("description_quality")),
+            description_source=HttpGameBridge._as_optional_str(payload.get("description_source")),
             description_vars=HttpGameBridge._decode_description_vars(payload.get("description_vars")),
             glossary=HttpGameBridge._decode_glossary(payload.get("glossary")),
         )

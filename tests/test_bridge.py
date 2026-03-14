@@ -30,6 +30,8 @@ class MockBridgeTests(unittest.TestCase):
         self.assertEqual(snapshot.phase, "combat")
         self.assertEqual(len(actions), 4)
         self.assertEqual({action.type for action in actions}, {"play_card", "use_potion", "end_turn"})
+        self.assertTrue(any(card.description_quality == "template_fallback" for card in snapshot.player.hand))
+        self.assertTrue(any(variable.value is None for card in snapshot.player.hand for variable in card.description_vars))
 
     def test_bridge_rejects_stale_action_without_state_mutation(self) -> None:
         snapshot = self.bridge.get_snapshot(self.session.session_id)
@@ -252,6 +254,8 @@ class HttpBridgeTests(unittest.TestCase):
                         "description": "At end of turn gain 3 Block.",
                         "description_raw": "At end of turn gain {Amount} [gold]Block[/gold].",
                         "description_rendered": "At end of turn gain 3 Block.",
+                        "description_quality": "resolved",
+                        "description_source": "rendered_from_vars",
                         "description_vars": [{"key": "amount", "value": 3, "source": "member_alias", "placeholder": "Amount"}],
                         "glossary": [{"glossary_id": "block", "display_text": "Block", "hint": "Prevents damage until next turn.", "source": "description_text"}],
                         "canonical_power_id": "metallicize",
@@ -268,6 +272,8 @@ class HttpBridgeTests(unittest.TestCase):
                         "description": "Deal 6 damage.",
                         "description_raw": "Deal {Damage:diff()} damage.",
                         "description_rendered": "Deal 6 damage.",
+                        "description_quality": "resolved",
+                        "description_source": "rendered_from_vars",
                         "description_vars": [{"key": "damage", "value": 6, "source": "description_placeholder", "placeholder": "Damage"}],
                         "glossary": [{"glossary_id": "damage", "display_text": "Damage", "hint": "Reduces HP.", "source": "description_text"}],
                         "cost_for_turn": 1,
@@ -303,6 +309,8 @@ class HttpBridgeTests(unittest.TestCase):
                             "amount": 3,
                             "description": "Increase attack damage.",
                             "description_rendered": "Increase attack damage.",
+                            "description_quality": "resolved",
+                            "description_source": "runtime_rendered",
                             "description_vars": [{"key": "strength", "value": 3, "source": "power_id"}],
                             "glossary": [{"glossary_id": "strength", "display_text": "Strength", "hint": "Increases attack damage.", "source": "canonical_id"}],
                             "canonical_power_id": "strength",
@@ -334,9 +342,11 @@ class HttpBridgeTests(unittest.TestCase):
 
         self.assertEqual(snapshot.player.hand[0].canonical_card_id, "strike_red")
         self.assertEqual(snapshot.player.hand[0].description_rendered, "Deal 6 damage.")
+        self.assertEqual(snapshot.player.hand[0].description_quality, "resolved")
         self.assertEqual(snapshot.player.hand[0].description_vars[0].key, "damage")
         self.assertEqual(snapshot.player.hand[0].glossary[0].glossary_id, "damage")
         self.assertEqual(snapshot.player.powers[0].name, "Metallicize")
+        self.assertEqual(snapshot.player.powers[0].description_source, "rendered_from_vars")
         self.assertEqual(snapshot.player.powers[0].description_vars[0].value, 3)
         self.assertEqual(snapshot.enemies[0].intent_type, "attack")
         self.assertEqual(snapshot.enemies[0].powers[0].canonical_power_id, "strength")

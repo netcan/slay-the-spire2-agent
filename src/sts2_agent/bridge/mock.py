@@ -207,6 +207,8 @@ class MockGameBridge(GameBridge):
             keywords=list(raw.get("keywords") or []),
             description_raw=description_raw,
             description_rendered=description_rendered or description,
+            description_quality=MockGameBridge._optional_str(raw.get("description_quality")),
+            description_source=MockGameBridge._optional_str(raw.get("description_source")),
             description_vars=MockGameBridge._build_description_vars(raw.get("description_vars")),
             glossary=MockGameBridge._build_glossary(raw.get("glossary")),
         )
@@ -224,6 +226,8 @@ class MockGameBridge(GameBridge):
             canonical_power_id=raw.get("canonical_power_id"),
             description_raw=description_raw,
             description_rendered=description_rendered or description,
+            description_quality=MockGameBridge._optional_str(raw.get("description_quality")),
+            description_source=MockGameBridge._optional_str(raw.get("description_source")),
             description_vars=MockGameBridge._build_description_vars(raw.get("description_vars")),
             glossary=MockGameBridge._build_glossary(raw.get("glossary")),
         )

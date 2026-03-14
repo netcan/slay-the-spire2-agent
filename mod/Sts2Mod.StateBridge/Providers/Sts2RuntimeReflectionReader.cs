@@ -135,14 +135,43 @@ internal sealed class Sts2RuntimeReflectionReader
     };
     private static readonly Regex RichTextTagRegex = new(@"\[(?:/?)[^\]]+\]", RegexOptions.Compiled);
     private static readonly Regex PlaceholderRegex = new(@"\{(?<name>[A-Za-z_][A-Za-z0-9_]*)(?::(?<expr>[^}]+))?\}", RegexOptions.Compiled);
+    private static readonly string[] DescriptionSearchNestedMembers =
+    {
+        "Data",
+        "Definition",
+        "RuntimeData",
+        "RuntimeState",
+        "DynamicData",
+        "DynamicState",
+        "CardData",
+        "CardModel",
+        "CardNode",
+        "Model",
+        "Card",
+        "CardState",
+        "CardDefinition",
+        "Stats",
+        "State",
+        "Effect",
+        "Effects",
+        "Action",
+        "Actions",
+        "Preview",
+        "PreviewData",
+        "CombatData",
+        "Computed",
+        "Values",
+        "DynamicVars",
+        "CanonicalVars",
+    };
     private static readonly IReadOnlyDictionary<string, string[]> DescriptionVariableMemberAliases =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            ["damage"] = new[] { "Damage", "CurrentDamage", "DisplayedDamage", "PreviewDamage", "BaseDamage", "AttackDamage", "DamageAmount" },
-            ["block"] = new[] { "Block", "CurrentBlock", "DisplayedBlock", "PreviewBlock", "BaseBlock", "BlockAmount" },
-            ["draw"] = new[] { "Draw", "DrawAmount", "CardsToDraw", "DrawCount", "CardDraw" },
+            ["damage"] = new[] { "Damage", "CurrentDamage", "DisplayedDamage", "PreviewDamage", "FinalDamage", "ModifiedDamage", "ComputedDamage", "BaseDamage", "AttackDamage", "DamageAmount" },
+            ["block"] = new[] { "Block", "CurrentBlock", "DisplayedBlock", "PreviewBlock", "FinalBlock", "ModifiedBlock", "ComputedBlock", "BaseBlock", "BlockAmount" },
+            ["draw"] = new[] { "Draw", "DrawAmount", "Cards", "CardsToDraw", "DrawCount", "CardDraw", "CardsDrawn" },
             ["strength"] = new[] { "Strength", "StrengthAmount" },
-            ["magic"] = new[] { "MagicNumber", "Magic", "MagicValue", "Value" },
+            ["magic"] = new[] { "MagicNumber", "Magic", "MagicValue", "ModifiedMagicNumber", "CurrentMagicNumber", "Value" },
             ["energy"] = new[] { "Energy", "EnergyGain", "EnergyAmount", "Cost", "CurrentEnergyCost" },
             ["vulnerable"] = new[] { "Vulnerable", "VulnerableAmount" },
             ["weak"] = new[] { "Weak", "WeakAmount" },
@@ -1566,6 +1595,8 @@ internal sealed class Sts2RuntimeReflectionReader
                     description.CompatibilityDescription,
                     description.Raw,
                     description.Rendered,
+                    description.Quality,
+                    description.Source,
                     description.Vars,
                     description.Glossary,
                     ResolveCardUpgraded(card),
@@ -1607,6 +1638,8 @@ internal sealed class Sts2RuntimeReflectionReader
                     Keywords: keywords,
                     DescriptionRaw: description.Raw,
                     DescriptionRendered: description.Rendered,
+                    DescriptionQuality: description.Quality,
+                    DescriptionSource: description.Source,
                     DescriptionVars: description.Vars,
                     Glossary: description.Glossary);
             })
@@ -2453,12 +2486,20 @@ internal sealed class Sts2RuntimeReflectionReader
         IReadOnlyList<string>? traits = null,
         IReadOnlyList<string>? keywords = null)
     {
-        var raw = ConvertToText(
+        var source = ResolveCardDescriptionSource(card);
+        var descriptionValue =
             GetMemberValue(card, "Description")
+            ?? GetMemberValue(source, "Description")
             ?? GetMemberValue(card, "RulesText")
+            ?? GetMemberValue(source, "RulesText")
             ?? GetMemberValue(card, "CardText")
+            ?? GetMemberValue(source, "CardText")
             ?? GetMemberValue(card, "BodyText")
-            ?? GetMemberValue(card, "Text"),
+            ?? GetMemberValue(source, "BodyText")
+            ?? GetMemberValue(card, "Text");
+        var boundDescriptionValue = TryBindLocStringWithDynamicVars(descriptionValue, source ?? card);
+        var raw = ConvertToText(
+            descriptionValue,
             path,
             textDiagnostics,
             "Description",
@@ -2468,13 +2509,22 @@ internal sealed class Sts2RuntimeReflectionReader
             "Text");
         var rendered = ConvertToText(
             GetMemberValue(card, "RenderedDescription")
+            ?? GetMemberValue(source, "RenderedDescription")
             ?? GetMemberValue(card, "RenderedText")
+            ?? GetMemberValue(source, "RenderedText")
             ?? GetMemberValue(card, "DisplayDescription")
+            ?? GetMemberValue(source, "DisplayDescription")
             ?? GetMemberValue(card, "DescriptionRendered")
+            ?? GetMemberValue(source, "DescriptionRendered")
             ?? GetMemberValue(card, "ResolvedDescription")
+            ?? GetMemberValue(source, "ResolvedDescription")
             ?? GetMemberValue(card, "CurrentDescription")
+            ?? GetMemberValue(source, "CurrentDescription")
+            ?? GetMemberValue(card, "DescriptionText")
+            ?? GetMemberValue(source, "DescriptionText")
             ?? GetMemberValue(GetMemberValue(card, "Description"), "RenderedText")
-            ?? GetMemberValue(GetMemberValue(card, "Description"), "Text"),
+            ?? GetMemberValue(GetMemberValue(card, "Description"), "Text")
+            ?? boundDescriptionValue,
             $"{path}.rendered",
             textDiagnostics,
             "RenderedDescription",
@@ -2483,16 +2533,178 @@ internal sealed class Sts2RuntimeReflectionReader
             "DescriptionRendered",
             "ResolvedDescription",
             "CurrentDescription");
-        var vars = ExtractDescriptionVariables(card, raw, ResolveCardDescriptionSeedVariables(card, raw, keywords));
-        rendered = RenderDescription(raw, rendered, vars);
+        var seedVariables = ResolveCardDescriptionSeedVariables(source ?? card, raw, keywords)
+            .Concat(ExtractDescriptionVariablesFromLocString(descriptionValue, "loc_string"))
+            .Concat(ExtractDescriptionVariablesFromLocString(boundDescriptionValue, "bound_loc_string"))
+            .ToArray();
+        var vars = ExtractDescriptionVariables(source ?? card, raw, seedVariables);
+        var renderOutcome = RenderDescription(raw, rendered, vars);
         var glossary = ExtractGlossaryAnchors(
             canonicalId: null,
             displayName: ConvertToText(GetMemberValue(card, "Title") ?? GetMemberValue(card, "Name") ?? card),
-            texts: new[] { rendered, raw },
+            texts: new[] { renderOutcome.Text, raw },
             keywords: keywords,
             traits: traits);
-        var compatibilityDescription = ChooseCompatibilityDescription(rendered, raw);
-        return new DescriptionExtraction(raw, rendered, vars, glossary, compatibilityDescription);
+        var compatibilityDescription = ChooseCompatibilityDescription(renderOutcome.Text, raw);
+        return new DescriptionExtraction(raw, renderOutcome.Text, renderOutcome.Quality, renderOutcome.Source, vars, glossary, compatibilityDescription);
+    }
+
+    private static object? ResolveCardDescriptionSource(object? card)
+    {
+        return GetMemberValue(card, "CardModel")
+            ?? GetMemberValue(card, "Model")
+            ?? GetMemberValue(card, "Card")
+            ?? card;
+    }
+
+    private static IReadOnlyList<DescriptionVariable> ExtractDescriptionVariablesFromLocString(object? descriptionValue, string sourceLabel)
+    {
+        if (descriptionValue is null)
+        {
+            return Array.Empty<DescriptionVariable>();
+        }
+
+        var variables = GetMemberValue(descriptionValue, "Variables");
+        if (variables is not IDictionary dictionary || dictionary.Count == 0)
+        {
+            return Array.Empty<DescriptionVariable>();
+        }
+
+        var results = new List<DescriptionVariable>();
+        foreach (DictionaryEntry entry in dictionary)
+        {
+            var rawKey = ConvertToText(entry.Key);
+            if (string.IsNullOrWhiteSpace(rawKey))
+            {
+                continue;
+            }
+
+            var key = NormalizeDescriptionVariableKey(rawKey);
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            var resolution = ResolveLocStringVariableValue(entry.Value);
+            results.Add(new DescriptionVariable(
+                key,
+                resolution.Value,
+                resolution.Source ?? sourceLabel,
+                rawKey));
+        }
+
+        return DeduplicateVariables(results);
+    }
+
+    private static object? TryBindLocStringWithDynamicVars(object? descriptionValue, object? source)
+    {
+        if (descriptionValue is null || source is null)
+        {
+            return null;
+        }
+
+        var typeName = GetTypeName(descriptionValue) ?? string.Empty;
+        if (!typeName.Contains("LocString", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var dynamicVars = GetMemberValue(source, "DynamicVars");
+        if (dynamicVars is null)
+        {
+            return null;
+        }
+
+        var bound = CloneLocString(descriptionValue) ?? descriptionValue;
+        TryInvokeSingleParameterMethod(bound, "AddVariablesFrom", descriptionValue);
+        if (!TryInvokeSingleParameterMethod(dynamicVars, "AddTo", bound))
+        {
+            return null;
+        }
+
+        return bound;
+    }
+
+    private static object? CloneLocString(object descriptionValue)
+    {
+        var type = descriptionValue.GetType();
+        var locTable = ConvertToText(GetMemberValue(descriptionValue, "LocTable"));
+        var locEntryKey = ConvertToText(GetMemberValue(descriptionValue, "LocEntryKey"));
+        if (string.IsNullOrWhiteSpace(locTable) || string.IsNullOrWhiteSpace(locEntryKey))
+        {
+            return null;
+        }
+
+        var ctor = type.GetConstructor(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { typeof(string), typeof(string) }, null);
+        if (ctor is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return ctor.Invoke(new object?[] { locTable, locEntryKey });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryInvokeSingleParameterMethod(object target, string methodName, object argument)
+    {
+        var methods = target.GetType()
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .Where(method => string.Equals(method.Name, methodName, StringComparison.Ordinal))
+            .ToArray();
+        foreach (var method in methods)
+        {
+            var parameters = method.GetParameters();
+            if (parameters.Length != 1 || !parameters[0].ParameterType.IsInstanceOfType(argument))
+            {
+                continue;
+            }
+
+            try
+            {
+                method.Invoke(target, new[] { argument });
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static VariableResolution ResolveLocStringVariableValue(object? value)
+    {
+        if (value is null)
+        {
+            return new VariableResolution(null, null);
+        }
+
+        try
+        {
+            return new VariableResolution(Convert.ToInt32(value), "loc_string.value");
+        }
+        catch
+        {
+            // fall through
+        }
+
+        foreach (var memberName in new[] { "IntValue", "PreviewValue", "BaseValue", "EnchantedValue", "Value" })
+        {
+            var numeric = GetNullableInt(value, memberName);
+            if (numeric is not null)
+            {
+                return new VariableResolution(numeric, $"loc_string.{memberName}");
+            }
+        }
+
+        return new VariableResolution(null, null);
     }
 
     private static string ResolveEnemyId(object enemy, int index)
@@ -2648,11 +2860,11 @@ internal sealed class Sts2RuntimeReflectionReader
             "DescriptionRendered");
         var canonicalPowerId = ResolvePowerCanonicalId(power);
         var vars = ExtractDescriptionVariables(power, raw, ResolvePowerDescriptionSeedVariables(power, canonicalPowerId));
-        rendered = RenderDescription(raw, rendered, vars);
+        var renderOutcome = RenderDescription(raw, rendered, vars);
         var glossary = ExtractGlossaryAnchors(
             canonicalPowerId,
             name,
-            new[] { rendered, raw },
+            new[] { renderOutcome.Text, raw },
             keywords: null,
             traits: null);
 
@@ -2662,10 +2874,12 @@ internal sealed class Sts2RuntimeReflectionReader
             Amount: GetNullableInt(power, "Amount")
                     ?? GetNullableInt(power, "Stacks")
                     ?? GetNullableInt(power, "Value"),
-            Description: ChooseCompatibilityDescription(rendered, raw),
+            Description: ChooseCompatibilityDescription(renderOutcome.Text, raw),
             CanonicalPowerId: canonicalPowerId,
             DescriptionRaw: raw,
-            DescriptionRendered: rendered,
+            DescriptionRendered: renderOutcome.Text,
+            DescriptionQuality: renderOutcome.Quality,
+            DescriptionSource: renderOutcome.Source,
             DescriptionVars: vars,
             Glossary: glossary);
     }
@@ -2736,13 +2950,13 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private static void AddSeedVariable(List<DescriptionVariable> variables, string key, object? source, string sourceLabel, string? placeholder)
     {
-        var value = ResolveDescriptionVariableValue(source, key);
-        if (value is null)
+        var resolution = ResolveDescriptionVariableValue(source, key);
+        if (resolution.Value is null)
         {
             return;
         }
 
-        variables.Add(new DescriptionVariable(key, value, sourceLabel, placeholder));
+        variables.Add(new DescriptionVariable(key, resolution.Value, resolution.Source ?? sourceLabel, placeholder));
     }
 
     private static IReadOnlyList<DescriptionVariable> ExtractDescriptionVariables(
@@ -2767,11 +2981,11 @@ internal sealed class Sts2RuntimeReflectionReader
                 }
 
                 var key = NormalizeDescriptionVariableKey(placeholder);
-                var value = ResolveDescriptionVariableValue(source, key);
+                var resolution = ResolveDescriptionVariableValue(source, key);
                 variables.Add(new DescriptionVariable(
                     key,
-                    value,
-                    "description_placeholder",
+                    resolution.Value,
+                    resolution.Source ?? "description_placeholder",
                     placeholder));
             }
         }
@@ -2797,11 +3011,11 @@ internal sealed class Sts2RuntimeReflectionReader
             .ToArray();
     }
 
-    private static int? ResolveDescriptionVariableValue(object? source, string? key)
+    private static VariableResolution ResolveDescriptionVariableValue(object? source, string? key)
     {
         if (source is null || string.IsNullOrWhiteSpace(key))
         {
-            return null;
+            return new VariableResolution(null, null);
         }
 
         if (!DescriptionVariableMemberAliases.TryGetValue(key, out var aliases))
@@ -2809,16 +3023,12 @@ internal sealed class Sts2RuntimeReflectionReader
             aliases = new[] { key };
         }
 
-        foreach (var alias in aliases)
+        foreach (var match in EnumerateDescriptionVariableMatches(source, aliases))
         {
-            var value = GetNullableInt(source, alias);
-            if (value is not null)
-            {
-                return value;
-            }
+            return match;
         }
 
-        return null;
+        return new VariableResolution(null, null);
     }
 
     private static string NormalizeDescriptionVariableKey(string? rawKey)
@@ -2843,21 +3053,16 @@ internal sealed class Sts2RuntimeReflectionReader
         };
     }
 
-    private static string? RenderDescription(
+    private static RenderOutcome RenderDescription(
         string? raw,
         string? runtimeRendered,
         IReadOnlyList<DescriptionVariable>? variables)
     {
         var preferred = NormalizeDescriptionText(runtimeRendered);
-        if (!string.IsNullOrWhiteSpace(preferred))
-        {
-            return preferred;
-        }
-
-        var template = NormalizeDescriptionText(raw);
+        var template = preferred ?? NormalizeDescriptionText(raw);
         if (string.IsNullOrWhiteSpace(template))
         {
-            return null;
+            return new RenderOutcome(null, null, null);
         }
 
         var variableMap = (variables ?? Array.Empty<DescriptionVariable>())
@@ -2865,7 +3070,7 @@ internal sealed class Sts2RuntimeReflectionReader
             .GroupBy(variable => variable.Key, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First().Value, StringComparer.OrdinalIgnoreCase);
 
-        return PlaceholderRegex.Replace(template, match =>
+        var rendered = PlaceholderRegex.Replace(template, match =>
         {
             var key = NormalizeDescriptionVariableKey(match.Groups["name"].Value);
             if (variableMap.TryGetValue(key, out var value) && value is not null)
@@ -2875,6 +3080,22 @@ internal sealed class Sts2RuntimeReflectionReader
 
             return match.Value;
         });
+        var containsPlaceholders = ContainsDescriptionPlaceholder(rendered);
+        if (preferred is not null && !containsPlaceholders)
+        {
+            return new RenderOutcome(rendered, "resolved", "runtime_rendered");
+        }
+
+        if (!containsPlaceholders)
+        {
+            return new RenderOutcome(rendered, "resolved", preferred is not null ? "runtime_rendered_with_var_substitution" : "rendered_from_vars");
+        }
+
+        var hasResolvedVariables = (variables ?? Array.Empty<DescriptionVariable>()).Any(variable => variable.Value is not null);
+        return new RenderOutcome(
+            rendered,
+            hasResolvedVariables ? "partial" : "template_fallback",
+            preferred is not null ? "runtime_template_fallback" : "raw_template");
     }
 
     private static string? NormalizeDescriptionText(string? text)
@@ -2891,6 +3112,184 @@ internal sealed class Sts2RuntimeReflectionReader
     private static string? ChooseCompatibilityDescription(string? rendered, string? raw)
     {
         return NormalizeDescriptionText(rendered) ?? NormalizeDescriptionText(raw);
+    }
+
+    private static bool ContainsDescriptionPlaceholder(string? text)
+    {
+        return !string.IsNullOrWhiteSpace(text) && PlaceholderRegex.IsMatch(text);
+    }
+
+    private static IEnumerable<VariableResolution> EnumerateDescriptionVariableMatches(object source, IReadOnlyList<string> aliases)
+    {
+        var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var queue = new Queue<(object Node, string Path, int Depth)>();
+        queue.Enqueue((source, "card", 0));
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (!seen.Add(current.Node))
+            {
+                continue;
+            }
+
+            foreach (var alias in aliases)
+            {
+                var direct = GetNullableInt(current.Node, alias);
+                if (direct is not null)
+                {
+                    yield return new VariableResolution(direct, $"member:{current.Path}.{alias}");
+                }
+
+                var method = InvokeNullableIntMethod(current.Node, alias);
+                if (method is not null)
+                {
+                    yield return new VariableResolution(method, $"method:{current.Path}.{alias}()");
+                }
+            }
+
+            foreach (var fuzzy in EnumerateNumericMembersByHint(current.Node, aliases, current.Path))
+            {
+                yield return fuzzy;
+            }
+
+            if (current.Depth >= 2)
+            {
+                continue;
+            }
+
+            foreach (var nestedName in DescriptionSearchNestedMembers)
+            {
+                var nested = GetMemberValue(current.Node, nestedName);
+                if (nested is null || nested is string || nested is ValueType)
+                {
+                    continue;
+                }
+
+                if (nested is IEnumerable enumerable && nested is not IDictionary)
+                {
+                    var nestedIndex = 0;
+                    foreach (var item in enumerable)
+                    {
+                        if (item is null || item is string || item is ValueType)
+                        {
+                            nestedIndex += 1;
+                            continue;
+                        }
+
+                        queue.Enqueue((item, $"{current.Path}.{nestedName}[{nestedIndex}]", current.Depth + 1));
+                        nestedIndex += 1;
+                    }
+
+                    continue;
+                }
+
+                queue.Enqueue((nested, $"{current.Path}.{nestedName}", current.Depth + 1));
+            }
+        }
+    }
+
+    private static IEnumerable<VariableResolution> EnumerateNumericMembersByHint(object source, IReadOnlyList<string> aliases, string path)
+    {
+        var type = source.GetType();
+        var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var aliasSet = new HashSet<string>(aliases, StringComparer.OrdinalIgnoreCase);
+        var tokenSet = aliases
+            .SelectMany(alias => SplitIdentifierTokens(alias))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        foreach (var property in type.GetProperties(flags).Where(property => property.GetIndexParameters().Length == 0))
+        {
+            if (!IsNumericType(property.PropertyType))
+            {
+                continue;
+            }
+
+            if (!NameMatchesDescriptionHint(property.Name, aliasSet, tokenSet))
+            {
+                continue;
+            }
+
+            var value = GetNullableInt(source, property.Name);
+            if (value is not null)
+            {
+                yield return new VariableResolution(value, $"property_hint:{path}.{property.Name}");
+            }
+        }
+
+        foreach (var field in type.GetFields(flags))
+        {
+            if (!IsNumericType(field.FieldType))
+            {
+                continue;
+            }
+
+            if (!NameMatchesDescriptionHint(field.Name, aliasSet, tokenSet))
+            {
+                continue;
+            }
+
+            var value = GetNullableInt(source, field.Name);
+            if (value is not null)
+            {
+                yield return new VariableResolution(value, $"field_hint:{path}.{field.Name}");
+            }
+        }
+    }
+
+    private static int? InvokeNullableIntMethod(object source, string alias)
+    {
+        foreach (var methodName in new[] { alias, $"Get{alias}", $"Compute{alias}", $"Resolve{alias}", $"GetCurrent{alias}" })
+        {
+            var method = source.GetType().GetMethod(methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, Type.EmptyTypes, null);
+            if (method is null || !IsNumericType(method.ReturnType))
+            {
+                continue;
+            }
+
+            try
+            {
+                var value = method.Invoke(source, null);
+                if (value is not null)
+                {
+                    return Convert.ToInt32(value);
+                }
+            }
+            catch
+            {
+                // ignore dynamic runtime invocation failures
+            }
+        }
+
+        return null;
+    }
+
+    private static bool NameMatchesDescriptionHint(string name, ISet<string> aliasSet, IReadOnlyList<string> tokenSet)
+    {
+        if (aliasSet.Contains(name))
+        {
+            return true;
+        }
+
+        return tokenSet.All(token => name.Contains(token, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyList<string> SplitIdentifierTokens(string value)
+    {
+        return Regex.Matches(value, "[A-Z]?[a-z]+|[0-9]+|[A-Z]+(?![a-z])")
+            .Select(match => match.Value)
+            .Where(token => !string.IsNullOrWhiteSpace(token))
+            .ToArray();
+    }
+
+    private static bool IsNumericType(Type type)
+    {
+        var candidate = Nullable.GetUnderlyingType(type) ?? type;
+        return candidate == typeof(int) ||
+               candidate == typeof(short) ||
+               candidate == typeof(long) ||
+               candidate == typeof(byte);
     }
 
     private static IReadOnlyList<GlossaryAnchor> ExtractGlossaryAnchors(
@@ -3103,6 +3502,8 @@ internal sealed class Sts2RuntimeReflectionReader
             ["description"] = card.Description,
             ["description_raw"] = card.DescriptionRaw,
             ["description_rendered"] = card.DescriptionRendered,
+            ["description_quality"] = card.DescriptionQuality,
+            ["description_source"] = card.DescriptionSource,
             ["description_vars"] = card.DescriptionVars,
             ["glossary"] = card.Glossary,
             ["upgraded"] = card.Upgraded,
@@ -3305,9 +3706,15 @@ internal sealed class Sts2RuntimeReflectionReader
         string Hint,
         IReadOnlyList<string> Terms);
 
+    private readonly record struct VariableResolution(int? Value, string? Source);
+
+    private readonly record struct RenderOutcome(string? Text, string? Quality, string? Source);
+
     private readonly record struct DescriptionExtraction(
         string? Raw,
         string? Rendered,
+        string? Quality,
+        string? Source,
         IReadOnlyList<DescriptionVariable> Vars,
         IReadOnlyList<GlossaryAnchor> Glossary,
         string? CompatibilityDescription);
@@ -3322,6 +3729,8 @@ internal sealed class Sts2RuntimeReflectionReader
         string? Description,
         string? DescriptionRaw,
         string? DescriptionRendered,
+        string? DescriptionQuality,
+        string? DescriptionSource,
         IReadOnlyList<DescriptionVariable> DescriptionVars,
         IReadOnlyList<GlossaryAnchor> Glossary,
         bool? Upgraded,

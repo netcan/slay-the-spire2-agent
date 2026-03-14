@@ -295,6 +295,8 @@ class ChatCompletionsPolicy:
             "description": preferred_description,
             "description_rendered": getattr(card, "description_rendered", None),
             "description_raw": ChatCompletionsPolicy._raw_description_for_summary(card),
+            "description_quality": getattr(card, "description_quality", None),
+            "description_source": getattr(card, "description_source", None),
             "description_vars": ChatCompletionsPolicy._summarize_description_vars(getattr(card, "description_vars", [])),
             "glossary": ChatCompletionsPolicy._summarize_glossary(getattr(card, "glossary", [])),
             "cost_for_turn": card.cost_for_turn,
@@ -324,6 +326,12 @@ class ChatCompletionsPolicy:
         rendered = getattr(power, "description_rendered", None)
         if rendered and rendered != preferred_description:
             payload["description_rendered"] = rendered
+        quality = getattr(power, "description_quality", None)
+        if quality:
+            payload["description_quality"] = quality
+        source = getattr(power, "description_source", None)
+        if source:
+            payload["description_source"] = source
         raw_description = ChatCompletionsPolicy._raw_description_for_summary(power)
         if raw_description:
             payload["description_raw"] = raw_description
@@ -393,7 +401,8 @@ class ChatCompletionsPolicy:
     @staticmethod
     def _preferred_description_text(item: Any) -> str | None:
         rendered = getattr(item, "description_rendered", None)
-        if isinstance(rendered, str) and rendered and not ChatCompletionsPolicy._is_template_text(rendered):
+        quality = getattr(item, "description_quality", None)
+        if isinstance(rendered, str) and rendered and quality != "template_fallback" and not ChatCompletionsPolicy._is_template_text(rendered):
             return rendered
         description = getattr(item, "description", None)
         if isinstance(description, str) and description:

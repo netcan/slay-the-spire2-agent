@@ -64,6 +64,8 @@ class CardView:
     keywords: list[str] = field(default_factory=list)
     description_raw: str | None = None
     description_rendered: str | None = None
+    description_quality: str | None = None
+    description_source: str | None = None
     description_vars: list[DescriptionVariable] = field(default_factory=list)
     glossary: list[GlossaryAnchor] = field(default_factory=list)
 
@@ -77,6 +79,8 @@ class PowerView:
     canonical_power_id: str | None = None
     description_raw: str | None = None
     description_rendered: str | None = None
+    description_quality: str | None = None
+    description_source: str | None = None
     description_vars: list[DescriptionVariable] = field(default_factory=list)
     glossary: list[GlossaryAnchor] = field(default_factory=list)
 

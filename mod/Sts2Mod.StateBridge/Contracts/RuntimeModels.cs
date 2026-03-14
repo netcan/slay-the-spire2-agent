@@ -8,6 +8,8 @@ public sealed record RuntimePowerState(
     string? CanonicalPowerId = null,
     string? DescriptionRaw = null,
     string? DescriptionRendered = null,
+    string? DescriptionQuality = null,
+    string? DescriptionSource = null,
     IReadOnlyList<DescriptionVariable>? DescriptionVars = null,
     IReadOnlyList<GlossaryAnchor>? Glossary = null);
 
@@ -43,6 +45,8 @@ public sealed record RuntimeCard(
     IReadOnlyList<string>? Keywords = null,
     string? DescriptionRaw = null,
     string? DescriptionRendered = null,
+    string? DescriptionQuality = null,
+    string? DescriptionSource = null,
     IReadOnlyList<DescriptionVariable>? DescriptionVars = null,
     IReadOnlyList<GlossaryAnchor>? Glossary = null);
 

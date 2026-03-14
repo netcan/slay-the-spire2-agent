@@ -109,6 +109,8 @@ public sealed class RewardPhaseDetectionTests
         Assert.Equal("Deal 6 damage.", card.Description);
         Assert.Equal("Deal {Damage:diff()} [gold]damage[/gold].", card.DescriptionRaw);
         Assert.Equal("Deal 6 damage.", card.DescriptionRendered);
+        Assert.Equal("resolved", card.DescriptionQuality);
+        Assert.Equal("runtime_rendered", card.DescriptionSource);
         Assert.Equal("damage", Assert.Single(card.DescriptionVars ?? Array.Empty<DescriptionVariable>()).Key);
         Assert.Contains(card.Glossary ?? Array.Empty<GlossaryAnchor>(), anchor => anchor.GlossaryId == "damage");
         Assert.Equal("AnyEnemy", card.TargetType);
@@ -165,8 +167,83 @@ public sealed class RewardPhaseDetectionTests
 
         Assert.Equal("Gain 5 Block.", card.DescriptionRendered);
         Assert.Equal("Gain 5 Block.", card.Description);
+        Assert.Equal("resolved", card.DescriptionQuality);
+        Assert.Equal("rendered_from_vars", card.DescriptionSource);
         Assert.Equal("block", Assert.Single(card.DescriptionVars ?? Array.Empty<DescriptionVariable>()).Key);
         Assert.Contains(card.Glossary ?? Array.Empty<GlossaryAnchor>(), anchor => anchor.GlossaryId == "block");
+    }
+
+    [Fact]
+    public void BuildCombatWindow_UsesDynamicVarsWhenDirectDamageMemberIsMissing()
+    {
+        var reader = CreateReader();
+        var runNode = new FakeRunNode(new FakeScreenTracker());
+        var runState = new FakeRunState(
+            new[] { new FakeEnemy("enemy-1", true) },
+            hand: new[]
+            {
+                new FakeCard("Strike")
+                {
+                    CardId = "strike_red",
+                    Description = "Deal {Damage:diff()} [gold]damage[/gold].",
+                    Damage = null,
+                    DynamicVars = new FakeDynamicVars(damage: 6),
+                    TargetType = "AnyEnemy",
+                    CardType = "Attack",
+                    Rarity = "Starter",
+                    Traits = new[] { "starter" },
+                    Keywords = new[] { "damage" },
+                },
+            });
+
+        var window = InvokeBuildCombatWindow(reader, runNode, runState);
+        var exported = new CombatWindowExtractor().Export(window, new BridgeSessionState(new BridgeOptions()));
+        var player = exported.Snapshot.Player;
+        Assert.NotNull(player);
+        var card = Assert.Single(player.Hand);
+        var variable = Assert.Single(card.DescriptionVars ?? Array.Empty<DescriptionVariable>());
+
+        Assert.Equal("Deal 6 damage.", card.DescriptionRendered);
+        Assert.Equal("resolved", card.DescriptionQuality);
+        Assert.Equal("rendered_from_vars", card.DescriptionSource);
+        Assert.Equal("damage", variable.Key);
+        Assert.Equal(6, variable.Value);
+        Assert.Contains("DynamicVars", variable.Source ?? string.Empty);
+    }
+
+    [Fact]
+    public void BuildCombatWindow_KeepsTemplateFallbackWhenDynamicValueCannotBeResolved()
+    {
+        var reader = CreateReader();
+        var runNode = new FakeRunNode(new FakeScreenTracker());
+        var runState = new FakeRunState(
+            new[] { new FakeEnemy("enemy-1", true) },
+            hand: new[]
+            {
+                new FakeCard("Battle Trance")
+                {
+                    CardId = "battle_trance",
+                    Description = "Draw {Draw:diff()} cards.",
+                    TargetType = "Self",
+                    CardType = "Skill",
+                    Keywords = new[] { "draw" },
+                },
+            });
+
+        var window = InvokeBuildCombatWindow(reader, runNode, runState);
+        var exported = new CombatWindowExtractor().Export(window, new BridgeSessionState(new BridgeOptions()));
+        var player = exported.Snapshot.Player;
+        Assert.NotNull(player);
+        var card = Assert.Single(player.Hand);
+        var variable = Assert.Single(card.DescriptionVars ?? Array.Empty<DescriptionVariable>());
+
+        Assert.Equal("Draw {Draw:diff()} cards.", card.DescriptionRendered);
+        Assert.Equal("Draw {Draw:diff()} cards.", card.Description);
+        Assert.Equal("template_fallback", card.DescriptionQuality);
+        Assert.Equal("raw_template", card.DescriptionSource);
+        Assert.Equal("draw", variable.Key);
+        Assert.Null(variable.Value);
+        Assert.Contains(card.Glossary ?? Array.Empty<GlossaryAnchor>(), anchor => anchor.GlossaryId == "draw");
     }
 
     [Fact]
@@ -501,11 +578,19 @@ public sealed class RewardPhaseDetectionTests
         public string Rarity { get; init; } = "Common";
         public int CanonicalEnergyCost { get; init; } = 1;
         public int CurrentStarCost { get; init; } = 1;
-        public int Damage { get; init; } = 6;
-        public int Block { get; init; } = 5;
+        public int? Damage { get; init; } = 6;
+        public int? Block { get; init; } = 5;
         public bool IsPlayable { get; init; } = true;
         public IReadOnlyList<string> Traits { get; init; } = Array.Empty<string>();
         public IReadOnlyList<string> Keywords { get; init; } = Array.Empty<string>();
+        public FakeDynamicVars? DynamicVars { get; init; }
+    }
+
+    private sealed class FakeDynamicVars(int? damage = null, int? block = null, int? cards = null)
+    {
+        public int? Damage { get; } = damage;
+        public int? Block { get; } = block;
+        public int? Cards { get; } = cards;
     }
 
     private sealed class FakeCardChoice(FakeCard card)
