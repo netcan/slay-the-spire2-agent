@@ -31,6 +31,68 @@ internal sealed class Sts2RuntimeReflectionReader
     private const string NRunTypeName = "MegaCrit.Sts2.Core.Nodes.NRun";
     private const string OverlayStackTypeName = "MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack";
     private const string RewardScreenTypeName = "MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen";
+    private static readonly string[] CardRewardSelectionTypeHints =
+    {
+        "CardReward",
+        "RewardCard",
+        "CardSelection",
+        "CardSelect",
+        "CardGrid",
+    };
+
+    private static readonly string[] CardRewardChoiceCollectionMembers =
+    {
+        "_cards",
+        "Cards",
+        "_rewardCards",
+        "RewardCards",
+        "_cardChoices",
+        "CardChoices",
+        "_choices",
+        "Choices",
+        "Options",
+        "_options",
+        "_cardButtons",
+        "CardButtons",
+        "_buttons",
+        "Buttons",
+    };
+
+    private static readonly string[] CardRewardChoiceCardMembers =
+    {
+        "Card",
+        "_card",
+        "Reward",
+        "_reward",
+        "Value",
+        "_value",
+        "Data",
+        "_data",
+    };
+
+    private static readonly string[] CardRewardChoiceSelectMethodNames =
+    {
+        "SelectCard",
+        "ChooseCard",
+        "OnCardSelected",
+        "OnCardChosen",
+        "OnChoiceSelected",
+        "CardSelectedFrom",
+        "CardChosenFrom",
+        "ConfirmSelection",
+    };
+
+    private static readonly string[] CardRewardChoiceSkipMethodNames =
+    {
+        "Skip",
+        "OnSkip",
+        "OnSkipped",
+        "SkipReward",
+        "Cancel",
+        "OnCancel",
+        "Close",
+        "Dismiss",
+    };
     private readonly BridgeOptions _options;
     private readonly InstallationProbeResult _probe;
 
@@ -80,8 +142,8 @@ internal sealed class Sts2RuntimeReflectionReader
         return phase switch
         {
             DecisionPhase.Reward => BuildRewardWindow(root.RunNode, root.RunState),
-            DecisionPhase.Map => BuildMapWindow(root.RunState),
-            DecisionPhase.Terminal => BuildTerminalWindow(root.RunState),
+            DecisionPhase.Map => BuildMapWindow(root.RunNode, root.RunState),
+            DecisionPhase.Terminal => BuildTerminalWindow(root.RunNode, root.RunState),
             _ => BuildCombatWindow(root.RunNode, root.RunState),
         };
     }
@@ -115,7 +177,7 @@ internal sealed class Sts2RuntimeReflectionReader
         var textDiagnostics = new TextDiagnosticsCollector();
         var player = BuildPlayerState(runState, textDiagnostics);
         var enemies = BuildEnemies(runState, textDiagnostics);
-        var metadata = CreateBaseMetadata(runState, DecisionPhase.Combat);
+        var metadata = CreateBaseMetadata(runNode, runState, DecisionPhase.Combat);
         var rewardAnalysis = AnalyzeRewardPhase(runNode, runState);
         metadata["phase_detection"] = rewardAnalysis.ToMetadata();
         var actions = new List<RuntimeActionDefinition>();
@@ -192,10 +254,17 @@ internal sealed class Sts2RuntimeReflectionReader
     private RuntimeWindowContext BuildRewardWindow(object runNode, object runState)
     {
         var textDiagnostics = new TextDiagnosticsCollector();
+        var rewardAnalysis = AnalyzeRewardPhase(runNode, runState);
         var rewards = ExtractRewards(runNode, textDiagnostics);
         var player = BuildPlayerState(runState, textDiagnostics);
-        var metadata = CreateBaseMetadata(runState, DecisionPhase.Reward);
-        metadata["phase_detection"] = AnalyzeRewardPhase(runNode, runState).ToMetadata();
+        var metadata = CreateBaseMetadata(runNode, runState, DecisionPhase.Reward);
+        metadata["phase_detection"] = rewardAnalysis.ToMetadata();
+        metadata["reward_subphase"] = rewardAnalysis.RewardSubphase;
+        metadata["detection_source"] = rewardAnalysis.DetectionSource;
+        if (string.Equals(rewardAnalysis.RewardSubphase, "card_reward_selection", StringComparison.Ordinal))
+        {
+            metadata["window_kind"] = "reward_card_selection";
+        }
         metadata["reward_count"] = rewards.Count;
         var actions = rewards
             .Select((reward, index) =>
@@ -219,7 +288,17 @@ internal sealed class Sts2RuntimeReflectionReader
 
         if (rewards.Count > 0)
         {
-            actions.Add(new RuntimeActionDefinition("skip_reward", "Skip Reward", new Dictionary<string, object?>()));
+            var skipAvailability = ResolveRewardSkipAvailability(runNode, rewardAnalysis);
+            metadata["reward_skip_available"] = skipAvailability.Available;
+            if (!skipAvailability.Available && !string.IsNullOrWhiteSpace(skipAvailability.Reason))
+            {
+                metadata["reward_skip_reason"] = skipAvailability.Reason;
+            }
+
+            if (skipAvailability.Available)
+            {
+                actions.Add(new RuntimeActionDefinition("skip_reward", "Skip Reward", new Dictionary<string, object?>()));
+            }
         }
 
         metadata["text_diagnostics"] = textDiagnostics.ToMetadata();
@@ -235,12 +314,12 @@ internal sealed class Sts2RuntimeReflectionReader
             Actions: actions);
     }
 
-    private RuntimeWindowContext BuildMapWindow(object runState)
+    private RuntimeWindowContext BuildMapWindow(object runNode, object runState)
     {
         var textDiagnostics = new TextDiagnosticsCollector();
         var mapNodes = ExtractMapNodes(runState, textDiagnostics);
         var player = BuildPlayerState(runState, textDiagnostics);
-        var metadata = CreateBaseMetadata(runState, DecisionPhase.Map);
+        var metadata = CreateBaseMetadata(runNode, runState, DecisionPhase.Map);
         metadata["node_count"] = mapNodes.Count;
         metadata["text_diagnostics"] = textDiagnostics.ToMetadata();
         var actions = mapNodes
@@ -261,11 +340,11 @@ internal sealed class Sts2RuntimeReflectionReader
             Actions: actions);
     }
 
-    private RuntimeWindowContext BuildTerminalWindow(object runState)
+    private RuntimeWindowContext BuildTerminalWindow(object runNode, object runState)
     {
         var textDiagnostics = new TextDiagnosticsCollector();
         var player = BuildPlayerState(runState, textDiagnostics);
-        var metadata = CreateBaseMetadata(runState, DecisionPhase.Terminal);
+        var metadata = CreateBaseMetadata(runNode, runState, DecisionPhase.Terminal);
         metadata["result"] = GetBoolean(runState, "IsGameOver") ? "game_over" : "terminal";
         metadata["text_diagnostics"] = textDiagnostics.ToMetadata();
         return new RuntimeWindowContext(
@@ -318,6 +397,28 @@ internal sealed class Sts2RuntimeReflectionReader
         }
 
         return metadata;
+    }
+
+    private Dictionary<string, object?> CreateBaseMetadata(object runNode, object runState, string phase)
+    {
+        var metadata = CreateBaseMetadata(runState, phase);
+        var overlayTop = GetOverlayTopScreen(runNode);
+        if (overlayTop is not null)
+        {
+            metadata["overlay_top_type"] = GetTypeName(overlayTop);
+        }
+        return metadata;
+    }
+
+    private object? GetOverlayTopScreen(object runNode)
+    {
+        var overlayStack = GetOverlayStack(runNode);
+        if (overlayStack is null)
+        {
+            return null;
+        }
+
+        return TryInvokeParameterlessMethod(overlayStack, "Peek");
     }
 
     private RuntimePlayerState? BuildPlayerState(object runState, TextDiagnosticsCollector textDiagnostics)
@@ -412,6 +513,12 @@ internal sealed class Sts2RuntimeReflectionReader
     private List<RewardOption> ExtractRewards(object runNode, TextDiagnosticsCollector textDiagnostics)
     {
         var rewardScreen = GetRewardScreen(runNode);
+        var cardRewardScreen = GetCardRewardSelectionScreen(runNode, rewardScreen);
+        if (cardRewardScreen is not null)
+        {
+            return ExtractCardRewardSelectionRewards(cardRewardScreen, textDiagnostics);
+        }
+
         if (rewardScreen is null)
         {
             return new List<RewardOption>();
@@ -421,6 +528,29 @@ internal sealed class Sts2RuntimeReflectionReader
             .Select((button, index) => DescribeReward(GetMemberValue(button, "Reward"), $"rewards[{index}]", textDiagnostics))
             .OfType<RewardOption>()
             .Where(reward => !string.IsNullOrWhiteSpace(reward.Label))
+            .ToList();
+    }
+
+    private List<RewardOption> ExtractCardRewardSelectionRewards(object cardRewardScreen, TextDiagnosticsCollector textDiagnostics)
+    {
+        var choices = ExtractCardRewardChoiceItems(cardRewardScreen);
+        if (choices.Count == 0)
+        {
+            return new List<RewardOption>();
+        }
+
+        var options = new List<RewardOption>(choices.Count);
+        for (var index = 0; index < choices.Count; index++)
+        {
+            var card = ResolveCardRewardChoiceCard(choices[index]);
+            var display = GetMemberValue(card, "Title") ?? GetMemberValue(card, "Name") ?? card;
+            var resolution = RuntimeTextResolver.Resolve(display, $"rewards[{index}].card", textDiagnostics, "Title", "Name");
+            var label = resolution.Text ?? $"card_{index}";
+            options.Add(new RewardOption(label, resolution));
+        }
+
+        return options
+            .Where(option => !string.IsNullOrWhiteSpace(option.Label))
             .ToList();
     }
 
@@ -542,6 +672,42 @@ internal sealed class Sts2RuntimeReflectionReader
         return GetMemberValue(GetRewardScreenType(), "Instance");
     }
 
+    private object? GetCardRewardSelectionScreen(object runNode, object? rewardScreen = null)
+    {
+        rewardScreen ??= GetRewardScreen(runNode);
+        var overlayTop = GetOverlayTopScreen(runNode);
+        if (overlayTop is null || IsRewardScreenObject(overlayTop))
+        {
+            return null;
+        }
+
+        var typeName = GetTypeName(overlayTop) ?? string.Empty;
+        var nameHint = CardRewardSelectionTypeHints.Any(hint => typeName.Contains(hint, StringComparison.OrdinalIgnoreCase));
+        if (!nameHint && rewardScreen is null)
+        {
+            // Avoid accidentally treating unrelated card screens (deck view/shop/etc.) as reward.
+            if (!typeName.Contains("Reward", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+        }
+
+        var choices = ExtractCardRewardChoiceItems(overlayTop);
+        if (choices.Count == 0)
+        {
+            return null;
+        }
+
+        var hasSelectHook = HasAnyMethod(overlayTop, CardRewardChoiceSelectMethodNames) ||
+                            choices.Any(choice => HasAnyMethod(choice, CardRewardChoiceSelectMethodNames));
+        if (!nameHint && !hasSelectHook)
+        {
+            return null;
+        }
+
+        return overlayTop;
+    }
+
     private RewardPhaseAnalysis AnalyzeRewardPhase(object runNode, object runState)
     {
         var rewardScreen = GetRewardScreen(runNode);
@@ -550,11 +716,23 @@ internal sealed class Sts2RuntimeReflectionReader
         var rewardScreenComplete = hasRewardScreen && GetBoolean(rewardScreen, "IsComplete");
         var rewardScreenVisible = hasRewardScreen && IsRewardScreenVisible(runNode, rewardScreen!);
         var hasLiveEnemies = BuildEnemies(runState, new TextDiagnosticsCollector()).Any(enemy => enemy.IsAlive);
+        var cardRewardSelectionDetected = GetCardRewardSelectionScreen(runNode, rewardScreen) is not null;
         var treatAsReward = hasRewardScreen &&
                             (!rewardScreenComplete ||
                              rewardButtons.Length > 0 ||
                              rewardScreenVisible ||
                              !hasLiveEnemies);
+        if (cardRewardSelectionDetected)
+        {
+            treatAsReward = true;
+        }
+
+        var rewardSubphase = cardRewardSelectionDetected
+            ? "card_reward_selection"
+            : hasRewardScreen ? "reward_choice" : "none";
+        var detectionSource = cardRewardSelectionDetected
+            ? "overlay_stack.card_reward_selection"
+            : ResolveRewardScreenSource(runNode, rewardScreen);
 
         return new RewardPhaseAnalysis(
             TreatAsReward: treatAsReward,
@@ -563,7 +741,11 @@ internal sealed class Sts2RuntimeReflectionReader
             RewardScreenVisible: rewardScreenVisible,
             RewardButtonCount: rewardButtons.Length,
             HasLiveEnemies: hasLiveEnemies,
-            RewardScreenSource: ResolveRewardScreenSource(runNode, rewardScreen));
+            RewardScreenSource: ResolveRewardScreenSource(runNode, rewardScreen),
+            CardRewardSelectionDetected: cardRewardSelectionDetected,
+            RewardSubphase: rewardSubphase,
+            DetectionSource: detectionSource,
+            OverlayTopType: GetTypeName(GetOverlayTopScreen(runNode)));
     }
 
     private IEnumerable<object> GetRewardButtons(object? rewardScreen)
@@ -572,6 +754,137 @@ internal sealed class Sts2RuntimeReflectionReader
             GetMemberValue(rewardScreen, "_rewardButtons")
             ?? GetMemberValue(rewardScreen, "RewardButtons")
             ?? GetMemberValue(rewardScreen, "Buttons"));
+    }
+
+    private readonly record struct RewardSkipAvailability(bool Available, string? Reason);
+
+    private RewardSkipAvailability ResolveRewardSkipAvailability(object runNode, RewardPhaseAnalysis rewardAnalysis)
+    {
+        if (string.Equals(rewardAnalysis.RewardSubphase, "card_reward_selection", StringComparison.Ordinal))
+        {
+            var cardRewardScreen = GetCardRewardSelectionScreen(runNode);
+            if (cardRewardScreen is null)
+            {
+                return new RewardSkipAvailability(false, "card_reward_screen_missing");
+            }
+
+            return HasAnyMethod(cardRewardScreen, CardRewardChoiceSkipMethodNames)
+                ? new RewardSkipAvailability(true, null)
+                : new RewardSkipAvailability(false, "skip_hook_not_found");
+        }
+
+        return new RewardSkipAvailability(true, null);
+    }
+
+    private List<object> ExtractCardRewardChoiceItems(object cardRewardScreen)
+    {
+        foreach (var memberName in CardRewardChoiceCollectionMembers)
+        {
+            var value = GetMemberValue(cardRewardScreen, memberName);
+            var items = EnumerateObjects(value).ToList();
+            if (items.Count > 0)
+            {
+                return items;
+            }
+        }
+
+        // Some screens keep the choice list nested under another node.
+        var nestedContainers = new[]
+        {
+            GetMemberValue(cardRewardScreen, "CardGrid"),
+            GetMemberValue(cardRewardScreen, "_cardGrid"),
+            GetMemberValue(cardRewardScreen, "Grid"),
+            GetMemberValue(cardRewardScreen, "_grid"),
+            GetMemberValue(cardRewardScreen, "Selection"),
+            GetMemberValue(cardRewardScreen, "_selection"),
+        };
+        foreach (var container in nestedContainers.Where(container => container is not null))
+        {
+            foreach (var memberName in CardRewardChoiceCollectionMembers)
+            {
+                var value = GetMemberValue(container, memberName);
+                var items = EnumerateObjects(value).ToList();
+                if (items.Count > 0)
+                {
+                    return items;
+                }
+            }
+        }
+
+        return new List<object>();
+    }
+
+    private static object? ResolveCardRewardChoiceCard(object choice)
+    {
+        foreach (var memberName in CardRewardChoiceCardMembers)
+        {
+            var value = GetMemberValue(choice, memberName);
+            if (value is not null)
+            {
+                return value;
+            }
+        }
+
+        return choice;
+    }
+
+    private static bool HasAnyMethod(object target, IEnumerable<string> methodNames)
+    {
+        var type = target.GetType();
+        foreach (var name in methodNames)
+        {
+            if (type.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance) is not null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryInvokeFirstCompatibleMethod(
+        object target,
+        IEnumerable<string> methodNames,
+        IReadOnlyList<object?[]> argCandidates,
+        out string? invokedMethod)
+    {
+        invokedMethod = null;
+        var type = target.GetType();
+        foreach (var name in methodNames)
+        {
+            var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .Where(method => string.Equals(method.Name, name, StringComparison.Ordinal))
+                .ToArray();
+            if (methods.Length == 0)
+            {
+                continue;
+            }
+
+            foreach (var method in methods)
+            {
+                foreach (var args in argCandidates)
+                {
+                    var parameters = method.GetParameters();
+                    if (parameters.Length != args.Length)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        method.Invoke(target, args);
+                        invokedMethod = method.Name;
+                        return true;
+                    }
+                    catch
+                    {
+                        // Continue probing other signatures/argument sets.
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     private static bool IsRewardScreenVisible(object runNode, object rewardScreen)
@@ -896,7 +1209,11 @@ internal sealed class Sts2RuntimeReflectionReader
         bool RewardScreenVisible,
         int RewardButtonCount,
         bool HasLiveEnemies,
-        string RewardScreenSource)
+        string RewardScreenSource,
+        bool CardRewardSelectionDetected,
+        string RewardSubphase,
+        string DetectionSource,
+        string? OverlayTopType)
     {
         public IReadOnlyDictionary<string, object?> ToMetadata()
         {
@@ -909,6 +1226,10 @@ internal sealed class Sts2RuntimeReflectionReader
                 ["reward_button_count"] = RewardButtonCount,
                 ["has_live_enemies"] = HasLiveEnemies,
                 ["reward_screen_source"] = RewardScreenSource,
+                ["card_reward_selection_detected"] = CardRewardSelectionDetected,
+                ["reward_subphase"] = RewardSubphase,
+                ["detection_source"] = DetectionSource,
+                ["overlay_top_type"] = OverlayTopType,
             };
         }
     }
@@ -989,6 +1310,61 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private RuntimeActionResult ExecuteChooseReward(object runNode, ActionRequest request, LegalAction action)
     {
+        var rewardIndex = GetNullableIntFromObject(GetDictionaryValue(action.Params, "reward_index"));
+
+        var cardRewardScreen = GetCardRewardSelectionScreen(runNode);
+        if (cardRewardScreen is not null)
+        {
+            var choices = ExtractCardRewardChoiceItems(cardRewardScreen);
+            if (choices.Count == 0)
+            {
+                return new RuntimeActionResult(false, "No card reward choices are currently available.", "stale_action");
+            }
+
+            var selectedIndex = rewardIndex ?? 0;
+            if (selectedIndex < 0 || selectedIndex >= choices.Count)
+            {
+                return new RuntimeActionResult(false, "Card reward selection target is no longer available.", "stale_action");
+            }
+
+            var choice = choices[selectedIndex];
+            var card = ResolveCardRewardChoiceCard(choice);
+            var handlers = new List<(object Target, string Label)>
+            {
+                (cardRewardScreen, "card_reward_screen"),
+                (choice, "card_reward_choice"),
+            };
+            if (card is not null)
+            {
+                handlers.Add((card, "card_reward_card"));
+            }
+
+            var argSets = new List<object?[]>
+            {
+                Array.Empty<object?>(),
+                new object?[] { choice },
+                new object?[] { card },
+                new object?[] { selectedIndex },
+                new object?[] { choice, selectedIndex },
+                new object?[] { card, selectedIndex },
+            };
+
+            foreach (var handler in handlers)
+            {
+                if (TryInvokeFirstCompatibleMethod(handler.Target, CardRewardChoiceSelectMethodNames, argSets, out var methodName))
+                {
+                    return new RuntimeActionResult(true, "Selected card reward.", metadata: new Dictionary<string, object?>
+                    {
+                        ["reward"] = ConvertToText(GetDictionaryValue(action.Params, "reward")),
+                        ["reward_index"] = selectedIndex,
+                        ["runtime_handler"] = $"{handler.Label}.{methodName}",
+                    });
+                }
+            }
+
+            return new RuntimeActionResult(false, "Card reward selection hooks are not available.", "runtime_incompatible");
+        }
+
         var rewardScreen = GetRewardScreen(runNode);
         if (rewardScreen is null)
         {
@@ -1001,7 +1377,6 @@ internal sealed class Sts2RuntimeReflectionReader
             return new RuntimeActionResult(false, "No reward buttons are currently available.", "stale_action");
         }
 
-        var rewardIndex = GetNullableIntFromObject(GetDictionaryValue(action.Params, "reward_index"));
         var button = rewardIndex is not null && rewardIndex.Value >= 0 && rewardIndex.Value < rewardButtons.Length
             ? rewardButtons[rewardIndex.Value]
             : rewardButtons.FirstOrDefault();
@@ -1029,6 +1404,28 @@ internal sealed class Sts2RuntimeReflectionReader
 
     private RuntimeActionResult ExecuteSkipReward(object runNode, ActionRequest request)
     {
+        var cardRewardScreen = GetCardRewardSelectionScreen(runNode);
+        if (cardRewardScreen is not null)
+        {
+            var argSets = new List<object?[]>
+            {
+                Array.Empty<object?>(),
+                new object?[] { false },
+                new object?[] { 0 },
+            };
+
+            if (TryInvokeFirstCompatibleMethod(cardRewardScreen, CardRewardChoiceSkipMethodNames, argSets, out var methodName))
+            {
+                return new RuntimeActionResult(true, "Skipped card reward selection.", metadata: new Dictionary<string, object?>
+                {
+                    ["action_type"] = "skip_reward",
+                    ["runtime_handler"] = $"card_reward_screen.{methodName}",
+                });
+            }
+
+            return new RuntimeActionResult(false, "Card reward skip hooks are not available.", "runtime_incompatible");
+        }
+
         var rewardScreen = GetRewardScreen(runNode);
         if (rewardScreen is null)
         {

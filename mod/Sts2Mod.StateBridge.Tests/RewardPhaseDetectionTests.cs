@@ -97,6 +97,63 @@ public sealed class RewardPhaseDetectionTests
         Assert.True(exported.Snapshot.Metadata.ContainsKey("phase_detection"));
     }
 
+    [Fact]
+    public void DetectPhase_ReturnsRewardWhenCardRewardSelectionOverlayIsVisible()
+    {
+        var reader = CreateReader();
+        var runNode = new FakeRunNode(
+            new FakeScreenTracker(),
+            new FakeGlobalUi(new FakeOverlayStack(new FakeCardRewardSelectionScreen(
+                new FakeCardChoice(new FakeCard("Strike")),
+                new FakeCardChoice(new FakeCard("Defend"))))));
+        var runState = new FakeRunState(Array.Empty<FakeEnemy>());
+
+        var phase = InvokeDetectPhase(reader, runNode, runState);
+
+        Assert.Equal(DecisionPhase.Reward, phase);
+    }
+
+    [Fact]
+    public void BuildRewardWindow_ExportsCardRewardSelectionAsRewardWindow()
+    {
+        var reader = CreateReader();
+        var runNode = new FakeRunNode(
+            new FakeScreenTracker(),
+            new FakeGlobalUi(new FakeOverlayStack(new FakeCardRewardSelectionScreen(
+                new FakeCardChoice(new FakeCard("Strike")),
+                new FakeCardChoice(new FakeCard("Defend"))))));
+        var runState = new FakeRunState(Array.Empty<FakeEnemy>());
+
+        var window = InvokeBuildRewardWindow(reader, runNode, runState);
+        var exported = new RewardWindowExtractor().Export(window, new BridgeSessionState(new BridgeOptions()));
+
+        Assert.Equal(DecisionPhase.Reward, window.Phase);
+        Assert.Equal(new[] { "Strike", "Defend" }, window.Rewards);
+        Assert.Contains(window.Actions, action => action.Type == "choose_reward");
+        Assert.Contains(window.Actions, action => action.Type == "skip_reward");
+        Assert.Equal("reward_card_selection", exported.Snapshot.Metadata["window_kind"]);
+        Assert.Equal("card_reward_selection", exported.Snapshot.Metadata["reward_subphase"]);
+        Assert.True(exported.Snapshot.Metadata.ContainsKey("overlay_top_type"));
+    }
+
+    [Fact]
+    public void BuildRewardWindow_DoesNotExportSkipRewardWhenCardSelectionCannotSkip()
+    {
+        var reader = CreateReader();
+        var runNode = new FakeRunNode(
+            new FakeScreenTracker(),
+            new FakeGlobalUi(new FakeOverlayStack(new FakeCardRewardSelectionScreenNoSkip(
+                new FakeCardChoice(new FakeCard("Strike"))))));
+        var runState = new FakeRunState(Array.Empty<FakeEnemy>());
+
+        var window = InvokeBuildRewardWindow(reader, runNode, runState);
+        var exported = new RewardWindowExtractor().Export(window, new BridgeSessionState(new BridgeOptions()));
+
+        Assert.DoesNotContain(window.Actions, action => action.Type == "skip_reward");
+        Assert.Equal(false, exported.Snapshot.Metadata["reward_skip_available"]);
+        Assert.Equal("skip_hook_not_found", exported.Snapshot.Metadata["reward_skip_reason"]);
+    }
+
     private static Sts2RuntimeReflectionReader CreateReader()
     {
         return new Sts2RuntimeReflectionReader(new BridgeOptions(), new InstallationProbeResult(true, null, null, null, null));
@@ -163,6 +220,38 @@ public sealed class RewardPhaseDetectionTests
     private sealed class FakeReward(string description)
     {
         public string Description { get; } = description;
+    }
+
+    private sealed class FakeCard(string title)
+    {
+        public string Title { get; } = title;
+    }
+
+    private sealed class FakeCardChoice(FakeCard card)
+    {
+        public FakeCard Card { get; } = card;
+    }
+
+    private sealed class FakeCardRewardSelectionScreen(params FakeCardChoice[] choices)
+    {
+        public List<FakeCardChoice> Cards { get; } = new(choices);
+
+        public void SelectCard(FakeCardChoice choice)
+        {
+        }
+
+        public void Skip()
+        {
+        }
+    }
+
+    private sealed class FakeCardRewardSelectionScreenNoSkip(params FakeCardChoice[] choices)
+    {
+        public List<FakeCardChoice> Cards { get; } = new(choices);
+
+        public void SelectCard(FakeCardChoice choice)
+        {
+        }
     }
 
     private sealed class FakeRunState(IEnumerable<FakeEnemy> enemies)

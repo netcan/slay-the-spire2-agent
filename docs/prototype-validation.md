@@ -30,6 +30,7 @@ python tools/validate_mod_bridge.py
 - 该脚本仍基于 `fixture`，用于快速回归协议与写接口行为。
 - 真实 `in-game-runtime` 仍建议按 `docs/sts2-mod-local-development.md` 中的手工流程联调。
 - 若后续补充 `HttpGameBridge`，可直接复用本脚本中的请求顺序扩展为端到端 agent 验证。
+- `tools/validate_mod_bridge.py` 现在会覆盖 reward 链路中的二级窗口：从奖励列表 `choose_reward` 进入 `reward_card_selection`，再执行一次 `choose_reward` 进入 `map`。
 
 ## 真实 live apply 联调记录
 
@@ -158,3 +159,19 @@ python tools/validate_mod_bridge.py
   - `total_actions = 1`
   - 提交动作：`skip_reward`
 - 对应 trace：`tmp/llm-autoplay/20260314-reward-skip-live/sess-9a95e0d2.jsonl`
+
+### 2026-03-14（reward 二级选牌界面识别与导出约定）
+
+- 目标：当奖励链路进入“选牌二级界面”时，bridge 仍必须导出为 `phase=reward`，并提供可执行的 `choose_reward|skip_reward`。
+- 期望 snapshot/action 特征（bridge 端）：
+  - `snapshot.phase = "reward"`
+  - `snapshot.metadata.window_kind = "reward_card_selection"`
+  - `snapshot.metadata.reward_subphase = "card_reward_selection"`
+  - `snapshot.metadata.detection_source` 指向 overlay 探测来源（例如 `overlay_stack.card_reward_selection`）
+  - `snapshot.metadata.overlay_top_type` 暴露 overlay 顶部 screen 的运行时类型名
+  - `actions` 含 `choose_reward`（每个选项一条，带 `params.reward_index`）以及在可跳过时含 `skip_reward`
+- fixture 回归（无需启动游戏）：
+  - `python tools/validate_mod_bridge.py`
+- live 冒烟（需要把游戏停在选牌二级界面）：
+  - 只读 capture：`python tools/validate_reward_card_selection.py`
+  - 如需真实选择一张牌（写入）：先以 `read_only=false` 且 `STS2_BRIDGE_ENABLE_WRITES=true` 启动游戏，再运行 `python tools/validate_reward_card_selection.py --apply --allow-write`

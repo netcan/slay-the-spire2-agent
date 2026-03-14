@@ -97,6 +97,41 @@ def main() -> int:
         reward_snapshot = fetch("/snapshot")
         assert reward_snapshot["phase"] == "reward"
 
+        # Simulate reward chain: choose a reward, then select a concrete card reward.
+        reward_actions = fetch("/actions")
+        choose_reward = next(action for action in reward_actions if action["type"] == "choose_reward")
+        status_code, apply_response = post_json(
+            "/apply",
+            {
+                "decision_id": reward_snapshot["decision_id"],
+                "action_id": choose_reward["action_id"],
+                "params": {},
+            },
+        )
+        assert status_code == 200
+        assert apply_response["status"] == "accepted"
+        card_snapshot = fetch("/snapshot")
+        assert card_snapshot["phase"] == "reward"
+        assert card_snapshot["metadata"]["window_kind"] == "reward_card_selection"
+        assert card_snapshot["metadata"]["reward_subphase"] == "card_reward_selection"
+        card_actions = fetch("/actions")
+        assert any(action["type"] == "choose_reward" for action in card_actions)
+        assert any(action["type"] == "skip_reward" for action in card_actions)
+
+        choose_card = next(action for action in card_actions if action["type"] == "choose_reward")
+        status_code, apply_response = post_json(
+            "/apply",
+            {
+                "decision_id": card_snapshot["decision_id"],
+                "action_id": choose_card["action_id"],
+                "params": {},
+            },
+        )
+        assert status_code == 200
+        assert apply_response["status"] == "accepted"
+        map_snapshot = fetch("/snapshot")
+        assert map_snapshot["phase"] == "map"
+
         status_code, stale_response = post_json(
             "/apply",
             {

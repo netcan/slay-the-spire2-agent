@@ -10,8 +10,10 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
     private readonly BridgeOptions _options;
     private readonly BridgeSessionState _sessionState;
     private readonly Dictionary<string, RuntimeWindowContext> _windows;
+    private readonly Dictionary<string, RuntimeWindowContext> _rewardWindows;
     private readonly Dictionary<string, IWindowExtractor> _extractors;
     private string _currentPhase = DecisionPhase.Combat;
+    private int _rewardStage;
 
     public FixtureGameStateProvider(BridgeOptions options)
     {
@@ -25,6 +27,7 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
             new TerminalWindowExtractor(),
         }.ToDictionary(extractor => extractor.Phase, StringComparer.OrdinalIgnoreCase);
         _windows = CreateWindows();
+        _rewardWindows = CreateRewardWindows();
     }
 
     public HealthResponse GetHealth()
@@ -73,10 +76,23 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
             case "play_card":
             case "end_turn":
                 _currentPhase = DecisionPhase.Reward;
+                _rewardStage = 0;
                 break;
             case "choose_reward":
+                if (string.Equals(_currentPhase, DecisionPhase.Reward, StringComparison.OrdinalIgnoreCase) && _rewardStage == 0)
+                {
+                    // Simulate selecting "Add a card" reward which opens the card reward selection screen.
+                    _rewardStage = 1;
+                    _currentPhase = DecisionPhase.Reward;
+                    break;
+                }
+
+                _rewardStage = 0;
+                _currentPhase = DecisionPhase.Map;
+                break;
             case "skip_reward":
             case "skip":
+                _rewardStage = 0;
                 _currentPhase = DecisionPhase.Map;
                 break;
             case "choose_map_node":
@@ -98,7 +114,9 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
     {
         var phase = ResolvePhase(requestedPhase);
         _currentPhase = phase;
-        var context = _windows[phase];
+        var context = phase == DecisionPhase.Reward
+            ? (_rewardStage == 0 ? _rewardWindows["reward_choice"] : _rewardWindows["reward_card_selection"])
+            : _windows[phase];
         return _extractors[phase].Export(context, _sessionState);
     }
 
@@ -194,20 +212,6 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                     new RuntimeActionDefinition("use_potion", "Use Strength Potion", new Dictionary<string, object?> { ["potion"] = "Strength Potion" }),
                     new RuntimeActionDefinition("end_turn", "End Turn", new Dictionary<string, object?>()),
                 }),
-            [DecisionPhase.Reward] = new RuntimeWindowContext(
-                DecisionPhase.Reward,
-                new RuntimePlayerState(70, 80, 0, 0, 116, Array.Empty<RuntimeCard>(), 12, 4, 0, new[] { "Burning Blood" }, Array.Empty<string>()),
-                Array.Empty<RuntimeEnemyState>(),
-                new[] { "Inflame", "Pommel Strike", "Shrug It Off" },
-                Array.Empty<string>(),
-                Terminal: false,
-                Metadata: new Dictionary<string, object?> { ["room_type"] = "reward" },
-                Actions: new[]
-                {
-                    new RuntimeActionDefinition("choose_reward", "Choose Inflame", new Dictionary<string, object?> { ["reward"] = "Inflame" }),
-                    new RuntimeActionDefinition("choose_reward", "Choose Pommel Strike", new Dictionary<string, object?> { ["reward"] = "Pommel Strike" }),
-                    new RuntimeActionDefinition("skip_reward", "Skip Reward", new Dictionary<string, object?>()),
-                }),
             [DecisionPhase.Map] = new RuntimeWindowContext(
                 DecisionPhase.Map,
                 new RuntimePlayerState(70, 80, 0, 0, 116, Array.Empty<RuntimeCard>(), 12, 4, 0, new[] { "Burning Blood" }, Array.Empty<string>()),
@@ -231,6 +235,80 @@ public sealed class FixtureGameStateProvider : IGameStateProvider
                 Terminal: true,
                 Metadata: new Dictionary<string, object?> { ["room_type"] = "victory", ["result"] = "win" },
                 Actions: Array.Empty<RuntimeActionDefinition>())
+        };
+    }
+
+    private static Dictionary<string, RuntimeWindowContext> CreateRewardWindows()
+    {
+        var player = new RuntimePlayerState(70, 80, 0, 0, 116, Array.Empty<RuntimeCard>(), 12, 4, 0, new[] { "Burning Blood" }, Array.Empty<string>());
+
+        var rewardChoiceLabels = new[]
+        {
+            "Add a card to your deck.",
+            "Gain gold.",
+        };
+
+        var rewardChoiceActions = rewardChoiceLabels
+            .Select((label, index) => new RuntimeActionDefinition(
+                "choose_reward",
+                $"Choose {label}",
+                new Dictionary<string, object?> { ["reward"] = label, ["reward_index"] = index }))
+            .Concat(new[]
+            {
+                new RuntimeActionDefinition("skip_reward", "Skip Reward", new Dictionary<string, object?>()),
+            })
+            .ToArray();
+
+        var cardChoiceLabels = new[]
+        {
+            "Strike",
+            "Defend",
+            "Bash",
+        };
+
+        var cardChoiceActions = cardChoiceLabels
+            .Select((label, index) => new RuntimeActionDefinition(
+                "choose_reward",
+                $"Choose {label}",
+                new Dictionary<string, object?> { ["reward"] = label, ["reward_index"] = index }))
+            .Concat(new[]
+            {
+                new RuntimeActionDefinition("skip_reward", "Skip Reward", new Dictionary<string, object?>()),
+            })
+            .ToArray();
+
+        return new Dictionary<string, RuntimeWindowContext>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["reward_choice"] = new RuntimeWindowContext(
+                DecisionPhase.Reward,
+                player,
+                Array.Empty<RuntimeEnemyState>(),
+                rewardChoiceLabels,
+                Array.Empty<string>(),
+                Terminal: false,
+                Metadata: new Dictionary<string, object?>
+                {
+                    ["room_type"] = "reward",
+                    ["window_kind"] = "reward_choice",
+                    ["reward_subphase"] = "reward_choice",
+                    ["reward_skip_available"] = true,
+                },
+                Actions: rewardChoiceActions),
+            ["reward_card_selection"] = new RuntimeWindowContext(
+                DecisionPhase.Reward,
+                player,
+                Array.Empty<RuntimeEnemyState>(),
+                cardChoiceLabels,
+                Array.Empty<string>(),
+                Terminal: false,
+                Metadata: new Dictionary<string, object?>
+                {
+                    ["room_type"] = "reward",
+                    ["window_kind"] = "reward_card_selection",
+                    ["reward_subphase"] = "card_reward_selection",
+                    ["reward_skip_available"] = true,
+                },
+                Actions: cardChoiceActions),
         };
     }
 }
