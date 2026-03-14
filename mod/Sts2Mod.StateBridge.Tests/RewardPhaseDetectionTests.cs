@@ -217,13 +217,43 @@ public sealed class RewardPhaseDetectionTests
         var enemy = Assert.Single(exported.Snapshot.Enemies);
 
         Assert.Equal("Louse", enemy.Name);
+        Assert.Equal("attack_6", enemy.Intent);
+        Assert.Equal("attack", enemy.IntentType);
         Assert.Equal(6, enemy.IntentDamage);
-        Assert.Equal("Attack", enemy.MoveName);
+        Assert.Null(enemy.MoveName);
         Assert.Null(enemy.MoveDescription);
         Assert.Empty(enemy.MoveGlossary ?? Array.Empty<GlossaryAnchor>());
         var enemyExport = Assert.IsAssignableFrom<IReadOnlyDictionary<string, object?>>(exported.Snapshot.Metadata["enemy_export"]);
         Assert.Equal(true, enemyExport["degraded"]);
         Assert.True((int)enemyExport["entry_count"] >= 1);
+    }
+
+    [Fact]
+    public void BuildCombatWindow_NormalizesGenericIntentLabelsIntoStableTypeAndSuppressesGenericMoveName()
+    {
+        var reader = CreateReader();
+        var runNode = new FakeRunNode(new FakeScreenTracker());
+        var runState = new FakeRunState(
+            new[]
+            {
+                new FakeEnemy("enemy-1", true, intent: "策略", intentDamage: 0, intentType: "策略")
+                {
+                    CurrentMove = new FakeEnemyMove("策略")
+                    {
+                        Description = "这个敌人将要对你施加一个负面效果。",
+                    },
+                },
+            });
+
+        var window = InvokeBuildCombatWindow(reader, runNode, runState);
+        var exported = new CombatWindowExtractor().Export(window, new BridgeSessionState(new BridgeOptions()));
+        var enemy = Assert.Single(exported.Snapshot.Enemies);
+
+        Assert.Equal("debuff", enemy.Intent);
+        Assert.Equal("debuff", enemy.IntentType);
+        Assert.Contains("debuff", enemy.IntentEffects ?? Array.Empty<string>());
+        Assert.Null(enemy.MoveName);
+        Assert.Equal("这个敌人将要对你施加一个负面效果。", enemy.MoveDescription);
     }
 
     [Fact]

@@ -3037,9 +3037,35 @@ internal sealed class Sts2RuntimeReflectionReader
             raw ??= hoverTipTitle;
         }
 
-        var intentTypeText = ConvertToText(GetMemberValue(intentObject, "IntentType"));
-        var type = NormalizeIntentType(raw ?? intentTypeText, enemy);
+        var moveSource = ResolveEnemyMoveSource(enemy);
         var hoverDescription = ConvertToText(GetMemberValue(hoverTip, "Description"), $"{path}.hover_tip_description", textDiagnostics, "Description", "Text");
+        var semanticDescription = hoverDescription
+            ?? ConvertDescriptionTemplateToText(
+                GetFirstMemberValue(
+                    moveSource,
+                    "Description",
+                    "RulesText",
+                    "Text",
+                    "TooltipText",
+                    "IntentDescription",
+                    "IntentText",
+                    "EffectText")
+                ?? GetFirstMemberValue(
+                    enemy,
+                    "IntentDescription",
+                    "IntentText",
+                    "IntentTooltip",
+                    "IntentTooltipText",
+                    "MoveDescription",
+                    "CurrentMoveDescription"),
+                $"{path}.semantic_description",
+                textDiagnostics,
+                "Description",
+                "RulesText",
+                "Text",
+                "TooltipText",
+                "IntentDescription",
+                "IntentText");
         var damage = GetNullableInt(enemy, "IntentDamage")
                      ?? GetNullableInt(enemy, "DisplayedIntentDamage")
                      ?? GetNullableInt(enemy, "AttackDamage")
@@ -3055,15 +3081,28 @@ internal sealed class Sts2RuntimeReflectionReader
         var block = GetNullableInt(enemy, "IntentBlock")
                     ?? GetNullableInt(enemy, "BlockAmount")
                     ?? GetNullableInt(GetMemberValue(enemy, "Monster"), "IntentBlock");
-        var display = raw ?? type ?? "unknown";
-        if ((string.IsNullOrWhiteSpace(raw) || string.Equals(display, "unknown", StringComparison.OrdinalIgnoreCase)) &&
+        var effects = ExtractIntentEffects(enemy, raw, semanticDescription);
+        var intentTypeText = ConvertToText(GetMemberValue(intentObject, "IntentType"));
+        var type = NormalizeIntentType(intentTypeText, raw, semanticDescription, effects, damage, block);
+        var display = raw;
+        if ((string.IsNullOrWhiteSpace(display) || IsGenericIntentLabel(display) || string.Equals(display, "unknown", StringComparison.OrdinalIgnoreCase)) &&
             !string.IsNullOrWhiteSpace(type) &&
-            damage is not null)
+            !string.Equals(type, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            display = type;
+        }
+
+        if ((string.IsNullOrWhiteSpace(display) || IsGenericIntentLabel(display) || string.Equals(display, "unknown", StringComparison.OrdinalIgnoreCase)) &&
+            !string.IsNullOrWhiteSpace(type) &&
+            !string.Equals(type, "unknown", StringComparison.OrdinalIgnoreCase) &&
+            damage is > 0)
         {
             display = hits is > 1
                 ? $"{type}_{damage}x{hits}"
                 : $"{type}_{damage}";
         }
+
+        display ??= raw ?? type ?? "unknown";
 
         return new EnemyIntentDescriptor(
             Display: display,
@@ -3072,7 +3111,7 @@ internal sealed class Sts2RuntimeReflectionReader
             Damage: damage,
             Hits: hits,
             Block: block,
-            Effects: ExtractIntentEffects(enemy, raw ?? hoverDescription));
+            Effects: effects);
     }
 
     private string? ResolveEnemyMoveName(
@@ -3103,7 +3142,7 @@ internal sealed class Sts2RuntimeReflectionReader
             "Title",
             "DisplayName",
             "Label");
-        if (!string.IsNullOrWhiteSpace(moveName))
+        if (!string.IsNullOrWhiteSpace(moveName) && !IsGenericIntentLabel(moveName))
         {
             return moveName;
         }
@@ -3120,16 +3159,19 @@ internal sealed class Sts2RuntimeReflectionReader
         if (!string.IsNullOrWhiteSpace(moveName))
         {
             var hoverTitle = ConvertToText(GetMemberValue(hoverTip, "Title"), $"{path}.move_name_hover_tip", textDiagnostics, "Title");
-            if (IsLowQualityIntentLabel(moveName) && !string.IsNullOrWhiteSpace(hoverTitle))
+            if (IsGenericIntentLabel(moveName) && !string.IsNullOrWhiteSpace(hoverTitle) && !IsGenericIntentLabel(hoverTitle))
             {
                 return hoverTitle;
             }
 
-            return moveName;
+            if (!IsGenericIntentLabel(moveName))
+            {
+                return moveName;
+            }
         }
 
         moveName = ConvertToText(GetMemberValue(hoverTip, "Title"), $"{path}.move_name_hover_tip", textDiagnostics, "Title");
-        if (!string.IsNullOrWhiteSpace(moveName))
+        if (!string.IsNullOrWhiteSpace(moveName) && !IsGenericIntentLabel(moveName))
         {
             return moveName;
         }
@@ -3147,19 +3189,21 @@ internal sealed class Sts2RuntimeReflectionReader
             "IntentName",
             "MoveName",
             "ActionName");
-        if (!string.IsNullOrWhiteSpace(moveName))
+        if (!string.IsNullOrWhiteSpace(moveName) && !IsGenericIntentLabel(moveName))
         {
             return moveName;
         }
 
         if (!string.IsNullOrWhiteSpace(intent.Raw) &&
-            !string.Equals(intent.Raw, "unknown", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(intent.Raw, "unknown", StringComparison.OrdinalIgnoreCase) &&
+            !IsGenericIntentLabel(intent.Raw))
         {
             return intent.Raw;
         }
 
         return !string.IsNullOrWhiteSpace(intent.Display) &&
-               !string.Equals(intent.Display, "unknown", StringComparison.OrdinalIgnoreCase)
+               !string.Equals(intent.Display, "unknown", StringComparison.OrdinalIgnoreCase) &&
+               !IsGenericIntentLabel(intent.Display)
             ? intent.Display
             : null;
     }
@@ -4208,39 +4252,60 @@ internal sealed class Sts2RuntimeReflectionReader
             .ToArray();
     }
 
-    private static string? NormalizeIntentType(string? raw, object enemy)
+    private static string? NormalizeIntentType(
+        string? direct,
+        string? raw,
+        string? description,
+        IReadOnlyList<string> effects,
+        int? damage,
+        int? block)
     {
-        var direct = ConvertToText(
-            GetMemberValue(enemy, "IntentType")
-            ?? GetMemberValue(enemy, "IntentKind")
-            ?? GetMemberValue(GetMemberValue(enemy, "Monster"), "IntentType"));
-        if (!string.IsNullOrWhiteSpace(direct))
+        var directType = NormalizeKnownIntentType(direct);
+        if (!string.IsNullOrWhiteSpace(directType) &&
+            !string.Equals(directType, "unknown", StringComparison.OrdinalIgnoreCase))
         {
-            return direct;
+            return directType;
         }
 
-        if (string.IsNullOrWhiteSpace(raw))
+        var rawType = NormalizeKnownIntentType(raw);
+        if (!string.IsNullOrWhiteSpace(rawType) &&
+            !string.Equals(rawType, "unknown", StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            return rawType;
         }
 
-        var normalized = raw.ToLowerInvariant();
-        var hasAttack = normalized.Contains("attack", StringComparison.Ordinal);
-        var hasBlock = normalized.Contains("block", StringComparison.Ordinal) || normalized.Contains("defend", StringComparison.Ordinal);
-        var hasBuff = normalized.Contains("buff", StringComparison.Ordinal);
-        var hasDebuff = normalized.Contains("debuff", StringComparison.Ordinal) ||
-                        normalized.Contains("weak", StringComparison.Ordinal) ||
-                        normalized.Contains("frail", StringComparison.Ordinal) ||
-                        normalized.Contains("vulnerable", StringComparison.Ordinal);
-
-        if (hasAttack && hasBlock)
+        var descriptionType = NormalizeKnownIntentType(description);
+        if (!string.IsNullOrWhiteSpace(descriptionType) &&
+            !string.Equals(descriptionType, "unknown", StringComparison.OrdinalIgnoreCase))
         {
-            return "attack_block";
+            return descriptionType;
         }
+
+        var texts = new[] { direct, raw, description }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim().ToLowerInvariant())
+            .ToArray();
+        var normalizedEffects = (effects ?? Array.Empty<string>())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim().ToLowerInvariant())
+            .ToArray();
+        var hasAttack = damage is > 0 ||
+                        HasIntentSignal(texts, "attack", "damage", "攻击", "伤害");
+        var hasBlock = block is > 0 ||
+                       HasIntentSignal(texts, "block", "defend", "shield", "格挡", "防御", "护盾");
+        var hasBuff = HasIntentSignal(texts, "buff", "strength", "ritual", "regen", "artifact", "增益", "力量", "再生", "人工制品") ||
+                      HasIntentSignal(normalizedEffects, "buff", "strength", "ritual", "regen", "artifact");
+        var hasDebuff = HasIntentSignal(texts, "debuff", "negative effect", "status", "weak", "frail", "vulnerable", "负面效果", "减益", "状态", "虚弱", "易伤", "脆弱") ||
+                        HasIntentSignal(normalizedEffects, "debuff", "weak", "frail", "vulnerable", "status");
 
         if (hasAttack && hasDebuff)
         {
             return "attack_debuff";
+        }
+
+        if (hasAttack && hasBlock)
+        {
+            return "attack_block";
         }
 
         if (hasAttack && hasBuff)
@@ -4268,10 +4333,13 @@ internal sealed class Sts2RuntimeReflectionReader
             return "buff";
         }
 
-        return normalized.Replace(' ', '_');
+        return directType
+            ?? rawType
+            ?? descriptionType
+            ?? "unknown";
     }
 
-    private static IReadOnlyList<string> ExtractIntentEffects(object enemy, string? raw)
+    private static IReadOnlyList<string> ExtractIntentEffects(object enemy, string? raw, string? description)
     {
         var effects = new List<string>();
         foreach (var item in EnumerateObjects(GetMemberValue(enemy, "IntentEffects") ?? GetMemberValue(enemy, "IntentKeywords")))
@@ -4283,9 +4351,14 @@ internal sealed class Sts2RuntimeReflectionReader
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(raw))
+        foreach (var text in new[] { raw, description })
         {
-            var normalized = raw.ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            var normalized = text.ToLowerInvariant();
             if (normalized.Contains("weak", StringComparison.Ordinal))
             {
                 effects.Add("weak");
@@ -4300,12 +4373,112 @@ internal sealed class Sts2RuntimeReflectionReader
             {
                 effects.Add("vulnerable");
             }
+
+            if (normalized.Contains("debuff", StringComparison.Ordinal) ||
+                normalized.Contains("negative effect", StringComparison.Ordinal) ||
+                normalized.Contains("负面效果", StringComparison.Ordinal))
+            {
+                effects.Add("debuff");
+            }
+
+            if (normalized.Contains("status", StringComparison.Ordinal) ||
+                normalized.Contains("状态", StringComparison.Ordinal))
+            {
+                effects.Add("status");
+            }
         }
 
         return effects
             .Where(effect => !string.IsNullOrWhiteSpace(effect))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private static bool HasIntentSignal(IEnumerable<string> texts, params string[] markers)
+    {
+        foreach (var text in texts)
+        {
+            foreach (var marker in markers)
+            {
+                if (text.Contains(marker, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsGenericIntentLabel(string? value)
+    {
+        if (IsLowQualityIntentLabel(value))
+        {
+            return true;
+        }
+
+        var key = NormalizeIntentLabelKey(value);
+        if (Regex.IsMatch(key, "^(attack|block|buff|debuff|attack_buff|attack_block|attack_debuff)(_[0-9]+(x[0-9]+)?)?$", RegexOptions.CultureInvariant))
+        {
+            return true;
+        }
+
+        return key is "unknown" or
+            "intent" or
+            "action" or
+            "move" or
+            "strategy" or
+            "skill" or
+            "attack" or
+            "block" or
+            "defend" or
+            "buff" or
+            "debuff" or
+            "attack_buff" or
+            "attack_block" or
+            "attack_debuff" or
+            "攻击" or
+            "格挡" or
+            "防御" or
+            "增益" or
+            "负面效果" or
+            "攻击_增益" or
+            "攻击_格挡" or
+            "攻击_负面效果" or
+            "策略" or
+            "技巧" or
+            "未知";
+    }
+
+    private static string? NormalizeKnownIntentType(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return NormalizeIntentLabelKey(value) switch
+        {
+            "attack" or "damage" or "攻击" or "伤害" => "attack",
+            "block" or "defend" or "shield" or "格挡" or "防御" or "护盾" => "block",
+            "buff" or "增益" => "buff",
+            "debuff" or "负面效果" or "减益" => "debuff",
+            "attack_buff" or "attackbuff" or "攻击_增益" or "攻击增益" => "attack_buff",
+            "attack_block" or "attackblock" or "攻击_格挡" or "攻击格挡" or "攻击_防御" or "攻击防御" => "attack_block",
+            "attack_debuff" or "attackdebuff" or "攻击_负面效果" or "攻击负面效果" or "攻击_减益" or "攻击减益" => "attack_debuff",
+            "strategy" or "skill" or "策略" or "技巧" or "intent" or "未知" or "unknown" => "unknown",
+            _ => null,
+        };
+    }
+
+    private static string NormalizeIntentLabelKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return Regex.Replace(value.Trim().ToLowerInvariant(), "[^\\p{L}\\p{Nd}]+", "_").Trim('_');
     }
 
     private static IReadOnlyDictionary<string, object?> BuildCardPreview(HandCardDescriptor card)

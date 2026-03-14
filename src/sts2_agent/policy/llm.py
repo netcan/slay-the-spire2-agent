@@ -329,6 +329,10 @@ class ChatCompletionsPolicy:
 
     @staticmethod
     def _summarize_enemy(enemy: Any) -> dict[str, Any]:
+        move_name = enemy.move_name
+        if move_name in {enemy.intent, enemy.intent_raw, enemy.intent_type}:
+            move_name = None
+
         payload = {
             "enemy_id": enemy.enemy_id,
             "name": enemy.name,
@@ -340,13 +344,12 @@ class ChatCompletionsPolicy:
         }
         optional_values = {
             "canonical_enemy_id": enemy.canonical_enemy_id,
-            "intent_raw": enemy.intent_raw,
             "intent_type": enemy.intent_type,
             "intent_damage": enemy.intent_damage,
             "intent_hits": enemy.intent_hits,
             "intent_block": enemy.intent_block,
             "intent_effects": list(enemy.intent_effects),
-            "move_name": enemy.move_name,
+            "move_name": move_name,
             "move_description": ChatCompletionsPolicy._preferred_description_text(enemy),
             "move_glossary": ChatCompletionsPolicy._summarize_glossary(getattr(enemy, "move_glossary", [])),
             "traits": list(enemy.traits),

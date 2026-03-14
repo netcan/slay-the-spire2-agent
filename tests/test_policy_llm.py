@@ -345,6 +345,19 @@ class ChatCompletionsPolicyTests(unittest.TestCase):
         self.assertIn("beast", payload["enemies"][0]["traits"])
         self.assertEqual(payload["enemies"][0]["powers"][0]["name"], "力量")
         self.assertEqual(payload["run_state"]["map"]["current_coord"], "1,2")
+        self.assertNotIn("intent_raw", payload["enemies"][0])
+
+    def test_summarize_snapshot_hides_duplicate_move_name(self) -> None:
+        snapshot = build_snapshot()
+        snapshot.enemies[0].intent = "策略"
+        snapshot.enemies[0].intent_raw = "策略"
+        snapshot.enemies[0].intent_type = "debuff"
+        snapshot.enemies[0].move_name = "策略"
+
+        payload = self.policy._summarize_snapshot(snapshot)
+
+        self.assertNotIn("move_name", payload["enemies"][0])
+        self.assertEqual(payload["enemies"][0]["intent_type"], "debuff")
 
     def test_preferred_description_downgrades_template_rendered_text(self) -> None:
         card = CardView(
